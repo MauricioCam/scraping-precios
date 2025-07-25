@@ -5,7 +5,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 
 # ------------------------------------------------
-# FUNCION DE SCRAPING SIN SELENIUM
+# FUNCIÓN DE SCRAPING: busca el precio SIN impuestos, lo multiplica x1.21
 # ------------------------------------------------
 def obtener_precios():
     urls = {
@@ -20,7 +20,6 @@ def obtener_precios():
     }
 
     precios = {}
-
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
@@ -34,52 +33,42 @@ def obtener_precios():
 
             soup = BeautifulSoup(r.text, "html.parser")
 
-            # Buscar primero precio de lista (si existe)
-            container = soup.select_one("span.valtech-carrefourar-product-price-0-x-listPriceValue")
+            # 🔍 Buscar el precio sin impuestos
+            span_precio = soup.select_one("span.carrefourar-transparencia-fiscal-0-x-valuePriceWithoutTaxes")
 
-            # Si no hay precio de lista, buscamos precio actual
-            if container is None:
-                container = soup.select_one("span.valtech-carrefourar-product-price-0-x-sellingPriceValue")
-
-            if container is None:
+            if not span_precio:
                 precios[nombre] = "no hay stock"
                 continue
 
-            # Buscar parte entera y decimal
-            entero = container.select_one("span.valtech-carrefourar-product-price-0-x-currencyInteger")
-            decimal = container.select_one("span.valtech-carrefourar-product-price-0-x-currencyFraction")
+            # Ejemplo de texto: "$ 668,60 c/u"
+            texto_precio = span_precio.get_text(strip=True)
 
-            if entero:
-                entero = entero.text.strip().replace(".", "")
-            else:
-                entero = ""
+            # Limpiar el texto → eliminar "$" y "c/u"
+            texto_precio = texto_precio.replace("$", "").replace("c/u", "").strip()
 
-            if decimal:
-                decimal = decimal.text.strip()
-            else:
-                decimal = "00"
+            # Convertir a float (reemplazar coma por punto)
+            precio_base = float(texto_precio.replace(".", "").replace(",", "."))
 
-            if entero == "":
-                precios[nombre] = "no hay stock"
-                continue
+            # Multiplicar por 1.21
+            precio_final = precio_base * 1.21
 
-            # Formatear precio a "1.200,00"
-            precio_float = float(f"{entero}.{decimal}")
-            precio_formateado = f"{precio_float:,.2f}".replace(",", "X").replace(".", ",").replace("X", "")
+            # Formatear a formato argentino (1.234,56)
+            precio_formateado = f"{precio_final:,.2f}".replace(",", "X").replace(".", ",").replace("X", "")
 
             precios[nombre] = precio_formateado
 
         except Exception:
             precios[nombre] = "no hay stock"
 
+    # Crear DataFrame para Streamlit
     df = pd.DataFrame(list(precios.items()), columns=["Producto", "Precio"])
     return df
 
 # ------------------------------------------------
-# INTERFAZ STREAMLIT
+# INTERFAZ DE STREAMLIT
 # ------------------------------------------------
 st.title("📊 Dashboard de precios Carrefour")
-st.write("Consulta de precios en tiempo real (scraping con requests + BeautifulSoup).")
+st.write("Consulta precios (con impuestos aplicados) en tiempo real.")
 
 # Botón para ejecutar scraping
 if st.button("🔄 Actualizar precios"):
