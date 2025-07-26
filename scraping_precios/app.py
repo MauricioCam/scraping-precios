@@ -4,19 +4,23 @@ import requests
 from datetime import datetime
 
 # -------------------
-# 🔹 COOKIE de Hiper Olivos
+# 🔹 COOKIE de Hiper Olivos (Carrefour)
 # -------------------
-COOKIE_SEGMENT = "eyJjYW1wYWlnbnMiOm51bGwsImNoYW5uZWwiOiIxIiwicHJpY2VUYWJsZXMiOm51bGwsInJlZ2lvbklkIjpudWxsLCJ1dG1fY2FtcGFpZ24iOm51bGwsInV0bV9zb3VyY2UiOm51bGwsInV0bWlfY2FtcGFpZ24iOm51bGwsImN1cnJlbmN5Q29kZSI6IkFSUyIsImN1cnJlbmN5U3ltYm9sIjoiJCIsImNvdW50cnlDb2RlIjoiQVJHIiwiY3VsdHVyZUluZm8iOiJlcy1BUiIsImFkbWluX2N1bHR1cmVJbmZvIjoiZXMtQVIiLCJjaGFubmVsUHJpdmFjeSI6InB1YmxpYyJ9"
+COOKIE_CARREFOUR = "eyJjYW1wYWlnbnMiOm51bGwsImNoYW5uZWwiOiIxIiwicHJpY2VUYWJsZXMiOm51bGwsInJlZ2lvbklkIjpudWxsLCJ1dG1fY2FtcGFpZ24iOm51bGwsInV0bV9zb3VyY2UiOm51bGwsInV0bWlfY2FtcGFpZ24iOm51bGwsImN1cnJlbmN5Q29kZSI6IkFSUyIsImN1cnJlbmN5U3ltYm9sIjoiJCIsImNvdW50cnlDb2RlIjoiQVJHIiwiY3VsdHVyZUluZm8iOiJlcy1BUiIsImFkbWluX2N1bHR1cmVJbmZvIjoiZXMtQVIiLCJjaGFubmVsUHJpdmFjeSI6InB1YmxpYyJ9"
 
-HEADERS = {
+HEADERS_CARREFOUR = {
     "User-Agent": "Mozilla/5.0",
-    "Cookie": f"vtex_segment={COOKIE_SEGMENT}"
+    "Cookie": f"vtex_segment={COOKIE_CARREFOUR}"
+}
+
+HEADERS_DIA = {
+    "User-Agent": "Mozilla/5.0"
 }
 
 # -------------------
-# 🔹 Diccionario de productos (Nombre: productId)
+# 🔹 Diccionario de productos Carrefour (Nombre: productId)
 # -------------------
-productos = {
+productos_carrefour = {
     "Oreo 3x354g": "715951",
     "Oreo 118g": "715949",
     "Oreo Golden 118g": "679211",
@@ -55,44 +59,88 @@ productos = {
 }
 
 # -------------------
+# 🔹 Diccionario de productos Día (Nombre: productId)
+# -------------------
+productos_dia = {
+    "Oreo 3x354g": "271630",
+    "Oreo Golden 118g": "283177",
+    "Pepitos 119g": "271628",
+    "Pepitos Tripack 357g": "271632",
+    "Lincoln Tripack 459g": "170177",
+    "Terrabusi Mix Familiar 390g": "284571",
+    "Terrabusi Mix Familiar 590g": "284655",
+    "Cerealitas 212g": "147689",
+    "Melba Rellena 120g": "73264",
+    "Melba 360g": "52289",
+    "Alfajor Terrabusi Triple 70g": "23423",
+    "Alfajor Oreo Triple 56g": "274632",
+    "Alfajor Shot con Maní 60g": "23431",
+    "Alfajor Pepitos Triple 57g": "23430",
+    "Alfajor Triple Milka Oreo 61g": "182539",
+    "Milka con leche 55g": "249906",
+    "Shot Maní 90g": "168862",
+    "Shot Maní 35g": "110388",
+    "Beldent Menta 20g": "269579",
+    "Tang Naranja 15g": "274179",
+    "Tang Manzana 15g": "274181",
+    "Clight Naranja 8g": "274217",
+    "Clight Mandarina 8g": "274276",
+    "Flan Royal Vainilla 60g": "146743"
+}
+
+# -------------------
+# 🔹 Función para obtener precio de la API
+# -------------------
+def obtener_precio(url, headers):
+    """Consulta la API de VTEX y devuelve precio de lista o precio actual."""
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        data = r.json()
+        if not data:
+            return "❌ Sin datos"
+        offer = data[0]['items'][0]['sellers'][0]['commertialOffer']
+        price_list = offer.get('ListPrice', 0)
+        price = offer.get('Price', 0)
+        final_price = price_list if price_list > 0 else price
+        if final_price > 0:
+            return f"{final_price:,.2f}".replace(",", "X").replace(".", ",").replace("X", "")
+        return "no hay stock"
+    except Exception:
+        return "⚠️ Error"
+
+# -------------------
 # 🔹 Streamlit UI
 # -------------------
-st.title("📊 Precios Carrefour - API (Sucursal Hiper Olivos)")
-st.write("Obtiene los precios de los productos listados directamente desde la API de Carrefour, aplicando la cookie de **Hiper Olivos**.")
+st.title("📊 Comparación de precios Carrefour (Hiper Olivos) y Día")
 
 if st.button("🔍 Ejecutar scraping"):
-    with st.spinner("⏳ Procesando... Esto puede tardar unos segundos"):
+    with st.spinner("⏳ Procesando precios de Carrefour y Día..."):
         resultados = []
 
-        for nombre, product_id in productos.items():
-            try:
-                url = f"https://www.carrefour.com.ar/api/catalog_system/pub/products/search?fq=productId:{product_id}"
-                r = requests.get(url, headers=HEADERS, timeout=10)
-                data = r.json()
+        # Usamos el diccionario de Carrefour como base de "Nombre"
+        for nombre, id_carrefour in productos_carrefour.items():
+            # Carrefour
+            url_carrefour = f"https://www.carrefour.com.ar/api/catalog_system/pub/products/search?fq=productId:{id_carrefour}"
+            precio_carrefour = obtener_precio(url_carrefour, HEADERS_CARREFOUR)
 
-                if not data:
-                    resultados.append({"productId": product_id, "Nombre": nombre, "Precio": "❌ Sin datos"})
-                    continue
+            # Día (si existe en diccionario)
+            id_dia = productos_dia.get(nombre)
+            if id_dia:
+                url_dia = f"https://diaonline.supermercadosdia.com.ar/api/catalog_system/pub/products/search?fq=productId:{id_dia}"
+                precio_dia = obtener_precio(url_dia, HEADERS_DIA)
+            else:
+                precio_dia = "❌ No en Día"
 
-                offer = data[0]['items'][0]['sellers'][0]['commertialOffer']
-                price_list = offer.get('ListPrice', 0)
-                price = offer.get('Price', 0)
-
-                # Preferimos precio de lista si existe, sino precio actual
-                final_price = price_list if price_list > 0 else price
-
-                if final_price > 0:
-                    precio_formateado = f"{final_price:,.2f}".replace(",", "X").replace(".", ",").replace("X", "")
-                    resultados.append({"productId": product_id, "Nombre": nombre, "Precio": precio_formateado})
-                else:
-                    resultados.append({"productId": product_id, "Nombre": nombre, "Precio": "no hay stock"})
-
-            except Exception:
-                resultados.append({"productId": product_id, "Nombre": nombre, "Precio": "⚠️ Error"})
+            resultados.append({
+                "productId": id_carrefour,
+                "Nombre": nombre,
+                "Carrefour (Hiper Olivos)": precio_carrefour,
+                "Día (Online)": precio_dia
+            })
 
         # --- Crear DataFrame y mostrarlo
-        df = pd.DataFrame(resultados, columns=["productId", "Nombre", "Precio"])
-        st.success("✅ Scraping completado vía API")
+        df = pd.DataFrame(resultados, columns=["productId", "Nombre", "Carrefour (Hiper Olivos)", "Día (Online)"])
+        st.success("✅ Scraping completado")
         st.dataframe(df)
 
         # --- Botón de descarga CSV
@@ -101,6 +149,6 @@ if st.button("🔍 Ejecutar scraping"):
         st.download_button(
             label="⬇ Descargar CSV",
             data=csv,
-            file_name=f"precios_hiper_olivos_{fecha}.csv",
+            file_name=f"precios_carrefour_dia_{fecha}.csv",
             mime="text/csv",
         )
