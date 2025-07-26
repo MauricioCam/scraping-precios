@@ -89,12 +89,11 @@ productos_dia = {
 }
 
 # -------------------
-# 🔹 Función para obtener precio de Carrefour
+# 🔹 Función para obtener precio de la API de VTEX
 # -------------------
-def obtener_precio_carrefour(product_id):
-    url = f"https://www.carrefour.com.ar/api/catalog_system/pub/products/search?fq=productId:{product_id}"
+def obtener_precio(url, headers):
     try:
-        r = requests.get(url, headers=HEADERS_CARREFOUR, timeout=10)
+        r = requests.get(url, headers=headers, timeout=10)
         data = r.json()
         if not data:
             return "❌ Sin datos"
@@ -109,33 +108,9 @@ def obtener_precio_carrefour(product_id):
         return "⚠️ Error"
 
 # -------------------
-# 🔹 Función para obtener precio de Día usando el endpoint Runtime
+# 🔹 Streamlit UI
 # -------------------
-def obtener_precio_dia(product_id):
-    runtime_url = f"https://diaonline.supermercadosdia.com.ar/_v/segment/routing/vtex.store@2.x/product/{product_id}/p?__pickRuntime=appsEtag%2Cblocks%2CblocksTree%2Ccomponents%2CcontentMap%2Cextensions%2Cmessages%2Cpage%2Cpages%2Cquery%2CqueryData%2Croute%2CruntimeMeta%2Csettings&__device=desktop"
-    try:
-        r = requests.get(runtime_url, headers=HEADERS_DIA, timeout=10)
-        data = r.json()
-        items = data.get("queryData", {}).get("product", {}).get("items", [])
-        if not items:
-            return "❌ Sin datos"
-        sellers = items[0].get("sellers", [])
-        if not sellers:
-            return "❌ Sin seller"
-        commertial_offer = sellers[0].get("commertialOffer", {})
-        price = commertial_offer.get("Price", 0)
-        list_price = commertial_offer.get("ListPrice", 0)
-        final_price = list_price if list_price > 0 else price
-        if final_price > 0:
-            return f"{final_price:,.2f}".replace(",", "X").replace(".", ",").replace("X", "")
-        return "no hay stock"
-    except Exception:
-        return "⚠️ Error"
-
-# -------------------
-# 🔹 Interfaz Streamlit
-# -------------------
-st.title("📊 Comparación de precios Carrefour (Hiper Olivos) y Día (Runtime)")
+st.title("📊 Comparación de precios Carrefour (Hiper Olivos) y Día (API VTEX)")
 
 if st.button("🔍 Ejecutar scraping"):
     with st.spinner("⏳ Procesando precios de Carrefour y Día..."):
@@ -143,12 +118,14 @@ if st.button("🔍 Ejecutar scraping"):
 
         for nombre, id_carrefour in productos_carrefour.items():
             # Carrefour
-            precio_carrefour = obtener_precio_carrefour(id_carrefour)
+            url_carrefour = f"https://www.carrefour.com.ar/api/catalog_system/pub/products/search?fq=productId:{id_carrefour}"
+            precio_carrefour = obtener_precio(url_carrefour, HEADERS_CARREFOUR)
 
             # Día (si existe en diccionario)
             id_dia = productos_dia.get(nombre)
             if id_dia:
-                precio_dia = obtener_precio_dia(id_dia)
+                url_dia = f"https://diaonline.supermercadosdia.com.ar/api/catalog_system/pub/products/search?fq=productId:{id_dia}"
+                precio_dia = obtener_precio(url_dia, HEADERS_DIA)
             else:
                 precio_dia = "❌ No en Día"
 
@@ -159,12 +136,12 @@ if st.button("🔍 Ejecutar scraping"):
                 "Día (Online)": precio_dia
             })
 
-        # Crear DataFrame
+        # --- Crear DataFrame
         df = pd.DataFrame(resultados, columns=["productId", "Nombre", "Carrefour (Hiper Olivos)", "Día (Online)"])
         st.success("✅ Scraping completado")
         st.dataframe(df)
 
-        # Botón CSV
+        # --- Botón CSV
         fecha = datetime.now().strftime("%Y-%m-%d")
         csv = df.to_csv(index=False).encode('utf-8')
         st.download_button(
