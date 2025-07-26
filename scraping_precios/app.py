@@ -1,78 +1,63 @@
 import streamlit as st
 import pandas as pd
+import requests
 from datetime import datetime
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoSuchElementException
 
-# Diccionario de URLs
-urls = {
-    "Oreo 3x354g": "https://www.carrefour.com.ar/galletitas-oreo-rellenas-con-crema-sabor-original-354-g-715951/p",
-    "Oreo 118g": "https://www.carrefour.com.ar/galletitas-dulce-oreo-rellenas-con-crema-118-g-715949/p",
-    "Oreo Golden 118g": "https://www.carrefour.com.ar/galletitas-oreo-golden-sabor-vainilla-rellenas-con-crema-118-g-679211/p",
-    "Pepitos 119g": "https://www.carrefour.com.ar/galletitas-pepitos-con-chips-de-chocolate-119-g-715953/p",
-    "Lincoln Tripack 459g": "https://www.carrefour.com.ar/galletitas-dulces-lincoln-clasicas--terrabusi-tripack-459-g-715956/p",
-    "Gelatina Royal 14g": "https://www.carrefour.com.ar/gelatina-sin-sabor-royal-14-g-662143/p",
-    "Cadbury Frutilla 82g": "https://www.carrefour.com.ar/chocolate-cadbury-frutilla-relleno-yoghurt-82-g-680432/p",
-    "Estufa": "https://www.carrefour.com.ar/estufa-de-cuarzo-philco-1800-w-phcu18t1-1659862/p"
+# --- Diccionario de productos Carrefour (Nombre: productId) ---
+productos = {
+    "Oreo 3x354g": "715951",
+    "Oreo 118g": "715949",
+    "Oreo Golden 118g": "679211",
+    "Pepitos 119g": "715953",
+    "Lincoln Tripack 459g": "715956",
+    "Gelatina Royal 14g": "662143",
+    "Cadbury Frutilla 82g": "680432",
+    "Estufa Philco": "1659862",
+    "Alfajor Shot con Maní": "353207"
 }
 
-st.title("📊 Scraping Carrefour")
+# --- Título de la app ---
+st.title("📊 Scraping Carrefour (API VTEX)")
 
+st.write("Pulsa el botón para obtener los precios actualizados directamente desde la API de Carrefour.")
+
+# --- Botón de ejecución ---
 if st.button("🔍 Ejecutar scraping"):
-    # Configuración Selenium
-    options = Options()
-    options.add_argument("--headless")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--window-size=1920,1080")
-    driver = webdriver.Chrome(options=options)
+    st.info("Consultando API de Carrefour...")
 
-    precios = {}
+    resultados = {}
 
-    for nombre, url in urls.items():
+    for nombre, product_id in productos.items():
         try:
-            driver.get(url)
+            url = f"https://www.carrefour.com.ar/api/catalog_system/pub/products/search?fq=productId:{product_id}"
+            response = requests.get(url, timeout=10)
+            data = response.json()
 
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "span.valtech-carrefourar-product-price-0-x-currencyContainer"))
-            )
+            # Extraer precios
+            offer = data[0]['items'][0]['sellers'][0]['commertialOffer']
+            price_list = offer['ListPrice']
+            price = offer['Price']
 
-            try:
-                container = driver.find_element(By.CSS_SELECTOR, 'span.valtech-carrefourar-product-price-0-x-listPriceValue')
-            except NoSuchElementException:
-                container = driver.find_element(By.CSS_SELECTOR, 'span.valtech-carrefourar-product-price-0-x-sellingPriceValue')
+            # Usar precio de lista si existe, sino precio actual
+            final_price = price_list if price_list > 0 else price
 
-            # Extraer partes del precio
-            entero = ""
-            decimal = "00"
-            for span in container.find_elements(By.XPATH, './/span'):
-                clase = span.get_attribute("class") or ""
-                texto = span.text.strip()
-                if "currencyInteger" in clase:
-                    entero += texto
-                elif "currencyFraction" in clase:
-                    decimal = texto
+            # Formatear precio: "4470,00"
+            precio_formateado = f"{final_price:,.2f}".replace(",", "X").replace(".", ",").replace("X", "")
 
-            if not entero:
-                raise ValueError("No se encontró parte entera del precio.")
-
-            precio_float = float(f"{entero}.{decimal}")
-            precio_formateado = f"{precio_float:,.2f}".replace(",", "X").replace(".", ",").replace("X", "")
-            precios[nombre] = precio_formateado
+            # Guardar resultado
+            resultados[nombre] = precio_formateado if final_price > 0 else "no hay stock"
 
         except Exception:
-            precios[nombre] = "no hay stock"
+            resultados[nombre] = "no hay stock"
 
-    driver.quit()
+    # --- Crear DataFrame ---
+    df = pd.DataFrame(list(resultados.items()), columns=["Producto", "Precio"])
 
-    # Mostrar tabla
-    df = pd.DataFrame(list(precios.items()), columns=["Producto", "Precio"])
+    # --- Mostrar tabla en Streamlit ---
+    st.success("✅ Scraping completado (API)")
     st.dataframe(df)
 
-    # Botón para descargar CSV
+    # --- Botón para descargar CSV ---
     fecha = datetime.now().strftime("%Y-%m-%d")
     csv = df.to_csv(index=False).encode('utf-8')
     st.download_button(
