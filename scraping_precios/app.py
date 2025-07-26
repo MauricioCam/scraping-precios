@@ -4,21 +4,27 @@ import requests
 from datetime import datetime
 
 # -------------------
-# 🔹 COOKIE de Hiper Olivos (Carrefour)
+# 🔹 COOKIE Carrefour Hiper Olivos
 # -------------------
-COOKIE_CARREFOUR = "eyJjYW1wYWlnbnMiOm51bGwsImNoYW5uZWwiOiIxIiwicHJpY2VUYWJsZXMiOm51bGwsInJlZ2lvbklkIjpudWxsLCJ1dG1fY2FtcGFpZ24iOm51bGwsInV0bV9zb3VyY2UiOm51bGwsInV0bWlfY2FtcGFpZ24iOm51bGwsImN1cnJlbmN5Q29kZSI6IkFSUyIsImN1cnJlbmN5U3ltYm9sIjoiJCIsImNvdW50cnlDb2RlIjoiQVJHIiwiY3VsdHVyZUluZm8iOiJlcy1BUiIsImFkbWluX2N1bHR1cmVJbmZvIjoiZXMtQVIiLCJjaGFubmVsUHJpdmFjeSI6InB1YmxpYyJ9"
+COOKIE_CARREFOUR = "eyJjYW1wYWlnbnMiOm51bGwsImNoYW5uZWwiOiIxIiwicHJpY2VUYWJsZXMiOm51bGwsInJlZ2lvbklkIjpudWxsLCJ1dG1fY2FtcGFpZ24iOm51bGwsInV0bV9zb3VyY2UiOm51bGwsInV0bWlfY2FtcGFpZ24iOm51bGwsImN1cnJlbmN5Q29kZSI6IkFSUyIsImN1cnJlbmN5U3ltYm9sIjoiJCIsImNvdW50cnlDb2RlIjoiQVJHIiwiY3VsdHVyZUluZm8iOiJlcy1BUiIsImFkbWluX2N1dHR1cmVJbmZvIjoiZXMtQVIiLCJjaGFubmVsUHJpdmFjeSI6InB1YmxpYyJ9"
 
 HEADERS_CARREFOUR = {
     "User-Agent": "Mozilla/5.0",
     "Cookie": f"vtex_segment={COOKIE_CARREFOUR}"
 }
 
+# -------------------
+# 🔹 COOKIE Día (Sucursal que elegiste)
+# -------------------
+COOKIE_DIA = "eyJjYW1wYWlnbnMiOm51bGwsImNoYW5uZWwiOiIxIiwicHJpY2VUYWJsZXMiOm51bGwsInJlZ2lvbklkIjoiVTFjallYSmthV0Z3Y205a09EUT0iLCJ1dG1fY2FtcGFpZ24iOm51bGwsInV0bV9zb3VyY2UiOm51bGwsInV0bWlfY2FtcGFpZ24iOm51bGwsImN1cnJlbmN5Q29kZSI6IkFSUyIsImN1cnJlbmN5U3ltYm9sIjoiJCIsImNvdW50cnlDb2RlIjoiQVJHIiwiY3VsdHVyZUluZm8iOiJlcy1BUiIsImFkbWluX2N1dHR1cmVJbmZvIjoiZXMtQVIiLCJjaGFubmVsUHJpdmFjeSI6InB1YmxpYyJ9"
+
 HEADERS_DIA = {
-    "User-Agent": "Mozilla/5.0"
+    "User-Agent": "Mozilla/5.0",
+    "Cookie": f"vtex_segment={COOKIE_DIA}"
 }
 
 # -------------------
-# 🔹 Diccionario de productos Carrefour (Nombre: productId)
+# 🔹 Diccionarios de productos (Carrefour y Día)
 # -------------------
 productos_carrefour = {
     "Oreo 3x354g": "715951",
@@ -58,9 +64,6 @@ productos_carrefour = {
     "Gelatina Royal Frutilla 25g": "714808"
 }
 
-# -------------------
-# 🔹 Diccionario de productos Día (Nombre: productId)
-# -------------------
 productos_dia = {
     "Oreo 3x354g": "271630",
     "Oreo Golden 118g": "283177",
@@ -89,7 +92,7 @@ productos_dia = {
 }
 
 # -------------------
-# 🔹 Función para obtener precio de la API de VTEX
+# 🔹 Función para obtener precio de VTEX
 # -------------------
 def obtener_precio(url, headers):
     try:
@@ -110,10 +113,10 @@ def obtener_precio(url, headers):
 # -------------------
 # 🔹 Streamlit UI
 # -------------------
-st.title("📊 Comparación de precios Carrefour (Hiper Olivos) y Día (API VTEX)")
+st.title("📊 Comparación de precios Carrefour (Hiper Olivos) y Día (Sucursal específica)")
 
 if st.button("🔍 Ejecutar scraping"):
-    with st.spinner("⏳ Procesando precios de Carrefour y Día..."):
+    with st.spinner("⏳ Procesando precios..."):
         resultados = []
 
         for nombre, id_carrefour in productos_carrefour.items():
@@ -133,11 +136,11 @@ if st.button("🔍 Ejecutar scraping"):
                 "productId": id_carrefour,
                 "Nombre": nombre,
                 "Carrefour (Hiper Olivos)": precio_carrefour,
-                "Día (Online)": precio_dia
+                "Día (Sucursal)": precio_dia
             })
 
         # --- Crear DataFrame
-        df = pd.DataFrame(resultados, columns=["productId", "Nombre", "Carrefour (Hiper Olivos)", "Día (Online)"])
+        df = pd.DataFrame(resultados, columns=["productId", "Nombre", "Carrefour (Hiper Olivos)", "Día (Sucursal)"])
         st.success("✅ Scraping completado")
         st.dataframe(df)
 
