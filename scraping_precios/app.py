@@ -70,7 +70,7 @@ if st.button("🔍 Ejecutar scraping"):
             data = r.json()
 
             if not data:
-                resultados.append({"productId": product_id, "Nombre": nombre, "Precio": "❌ Sin datos"})
+                resultados.append({"productId": product_id, "Nombre": nombre, "Precio": "Revisar"})
                 continue
 
             offer = data[0]['items'][0]['sellers'][0]['commertialOffer']
@@ -84,10 +84,10 @@ if st.button("🔍 Ejecutar scraping"):
                 precio_formateado = f"{final_price:,.2f}".replace(",", "X").replace(".", ",").replace("X", "")
                 resultados.append({"productId": product_id, "Nombre": nombre, "Precio": precio_formateado})
             else:
-                resultados.append({"productId": product_id, "Nombre": nombre, "Precio": "no hay stock"})
+                resultados.append({"productId": product_id, "Nombre": nombre, "Precio": "Revisar"})
 
         except Exception:
-            resultados.append({"productId": product_id, "Nombre": nombre, "Precio": "⚠️ Error"})
+            resultados.append({"productId": product_id, "Nombre": nombre, "Precio": "Revisar"})
 
     # --- Crear DataFrame y mostrarlo
     df = pd.DataFrame(resultados, columns=["productId", "Nombre", "Precio"])
