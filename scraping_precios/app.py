@@ -61,45 +61,46 @@ st.title("📊 Precios Carrefour - API (Sucursal Hiper Olivos)")
 st.write("Obtiene los precios de los productos listados directamente desde la API de Carrefour, aplicando la cookie de **Hiper Olivos**.")
 
 if st.button("🔍 Ejecutar scraping"):
-    resultados = []
+    with st.spinner("⏳ Procesando... Esto puede tardar unos segundos"):
+        resultados = []
 
-    for nombre, product_id in productos.items():
-        try:
-            url = f"https://www.carrefour.com.ar/api/catalog_system/pub/products/search?fq=productId:{product_id}"
-            r = requests.get(url, headers=HEADERS, timeout=10)
-            data = r.json()
+        for nombre, product_id in productos.items():
+            try:
+                url = f"https://www.carrefour.com.ar/api/catalog_system/pub/products/search?fq=productId:{product_id}"
+                r = requests.get(url, headers=HEADERS, timeout=10)
+                data = r.json()
 
-            if not data:
-                resultados.append({"productId": product_id, "Nombre": nombre, "Precio": "Revisar"})
-                continue
+                if not data:
+                    resultados.append({"productId": product_id, "Nombre": nombre, "Precio": "❌ Sin datos"})
+                    continue
 
-            offer = data[0]['items'][0]['sellers'][0]['commertialOffer']
-            price_list = offer.get('ListPrice', 0)
-            price = offer.get('Price', 0)
+                offer = data[0]['items'][0]['sellers'][0]['commertialOffer']
+                price_list = offer.get('ListPrice', 0)
+                price = offer.get('Price', 0)
 
-            # Preferimos precio de lista si existe, sino precio actual
-            final_price = price_list if price_list > 0 else price
+                # Preferimos precio de lista si existe, sino precio actual
+                final_price = price_list if price_list > 0 else price
 
-            if final_price > 0:
-                precio_formateado = f"{final_price:,.2f}".replace(",", "X").replace(".", ",").replace("X", "")
-                resultados.append({"productId": product_id, "Nombre": nombre, "Precio": precio_formateado})
-            else:
-                resultados.append({"productId": product_id, "Nombre": nombre, "Precio": "Revisar"})
+                if final_price > 0:
+                    precio_formateado = f"{final_price:,.2f}".replace(",", "X").replace(".", ",").replace("X", "")
+                    resultados.append({"productId": product_id, "Nombre": nombre, "Precio": precio_formateado})
+                else:
+                    resultados.append({"productId": product_id, "Nombre": nombre, "Precio": "no hay stock"})
 
-        except Exception:
-            resultados.append({"productId": product_id, "Nombre": nombre, "Precio": "Revisar"})
+            except Exception:
+                resultados.append({"productId": product_id, "Nombre": nombre, "Precio": "⚠️ Error"})
 
-    # --- Crear DataFrame y mostrarlo
-    df = pd.DataFrame(resultados, columns=["productId", "Nombre", "Precio"])
-    st.success("✅ Scraping completado vía API")
-    st.dataframe(df)
+        # --- Crear DataFrame y mostrarlo
+        df = pd.DataFrame(resultados, columns=["productId", "Nombre", "Precio"])
+        st.success("✅ Scraping completado vía API")
+        st.dataframe(df)
 
-    # --- Botón de descarga CSV
-    fecha = datetime.now().strftime("%Y-%m-%d")
-    csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="⬇ Descargar CSV",
-        data=csv,
-        file_name=f"precios_hiper_olivos_{fecha}.csv",
-        mime="text/csv",
-    )
+        # --- Botón de descarga CSV
+        fecha = datetime.now().strftime("%Y-%m-%d")
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="⬇ Descargar CSV",
+            data=csv,
+            file_name=f"precios_hiper_olivos_{fecha}.csv",
+            mime="text/csv",
+        )
