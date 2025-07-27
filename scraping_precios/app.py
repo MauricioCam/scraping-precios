@@ -25,7 +25,7 @@ st.title("📊 Relevamiento Precios Carrefour")
 st.write("Relevamiento automático de todos los SKUs, aplicando la sucursal **Hiper Olivos**.")
 
 if st.button("🔍 Ejecutar relevamiento"):
-    with st.spinner("⏳ Procesando... Esto puede tardar unos 2 minutos"):
+    with st.spinner("⏳ Relevando... Esto puede tardar unos 2 minutos"):
         resultados = []
 
         for nombre, datos in productos.items():
