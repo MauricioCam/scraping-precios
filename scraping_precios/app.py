@@ -57,7 +57,7 @@ if st.button("🔍 Ejecutar relevamiento"):
 
         # --- Crear DataFrame y mostrarlo
         df = pd.DataFrame(resultados, columns=["EAN", "Nombre", "Precio"])
-        st.success("✅ Relevamiento completado (se puede copiar y pegar en excel o descargar en csv con el botón de más abajo)")
+        st.success("✅ Relevamiento completado")
         st.dataframe(df)
 
         # --- Botón de descarga CSV
