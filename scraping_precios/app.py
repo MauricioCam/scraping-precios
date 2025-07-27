@@ -21,11 +21,11 @@ HEADERS = {
 # ===========================
 # 🎨 INTERFAZ STREAMLIT
 # ===========================
-st.title("📊 Precios Carrefour - API (Sucursal Hiper Olivos)")
-st.write("Obtiene los precios de los productos listados directamente desde la API de Carrefour, aplicando la cookie de **Hiper Olivos**.")
+st.title("📊 Relevamiento Precios Carrefour")
+st.write("Relevamiento automático de todos los SKUs, aplicando la sucursal **Hiper Olivos**.")
 
-if st.button("🔍 Ejecutar scraping"):
-    with st.spinner("⏳ Procesando... Esto puede tardar unos segundos"):
+if st.button("🔍 Ejecutar relevamiento"):
+    with st.spinner("⏳ Procesando... Esto puede tardar unos 2 minutos"):
         resultados = []
 
         for nombre, datos in productos.items():
@@ -38,7 +38,7 @@ if st.button("🔍 Ejecutar scraping"):
                 data = r.json()
 
                 if not data:
-                    resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "❌ Sin datos"})
+                    resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
                     continue
 
                 offer = data[0]['items'][0]['sellers'][0]['commertialOffer']
@@ -53,11 +53,11 @@ if st.button("🔍 Ejecutar scraping"):
                     resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "no hay stock"})
 
             except Exception:
-                resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "⚠️ Error"})
+                resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
 
         # --- Crear DataFrame y mostrarlo
         df = pd.DataFrame(resultados, columns=["EAN", "Nombre", "Precio"])
-        st.success("✅ Scraping completado vía API")
+        st.success("✅ Relevamiento completado (se puede copiar y pegar en excel o descargar en csv con el botón de más abajo)")
         st.dataframe(df)
 
         # --- Botón de descarga CSV
