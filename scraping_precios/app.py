@@ -50,7 +50,7 @@ if st.button("🔍 Ejecutar relevamiento"):
                     precio_formateado = f"{final_price:,.2f}".replace(",", "X").replace(".", ",").replace("X", "")
                     resultados.append({"EAN": ean, "Nombre": nombre, "Precio": precio_formateado})
                 else:
-                    resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "no hay stock"})
+                    resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
 
             except Exception:
                 resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
