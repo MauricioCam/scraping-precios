@@ -1,4 +1,3 @@
-# app.py
 import streamlit as st
 import pandas as pd
 import requests
@@ -19,32 +18,9 @@ HEADERS = {
     "Cookie": f"vtex_segment={COOKIE_SEGMENT}"
 }
 
-def format_ar_price_no_thousands(value):
-    if value is None:
-        return None
-    return f"{float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", "")
-
 # ===========================
 # 🎨 INTERFAZ STREAMLIT
 # ===========================
-st.set_page_config(page_title="📊 Precios Carrefour", layout="wide")
-
-# ------ Menú lateral robusto ------
-with st.sidebar:
-    st.header("Menú")
-    st.button("Carrefour", disabled=True)
-    # Intento 1: page_link a la página registrada
-    if hasattr(st, "page_link"):
-        st.page_link("pages/coto.py", label="Ir a Coto ▶", icon="🏷️")
-    # Intento 2: switch_page si existe
-    elif st.button("Ir a Coto ▶"):
-        try:
-            st.switch_page("pages/coto.py")
-        except Exception:
-            pass
-    # Intento 3: enlace clásico (multipage usa ?page=NombreDeLaPágina)
-    st.markdown("[Abrir Coto](?page=Coto)")
-
 st.title("📊 Relevamiento Precios Carrefour")
 st.write("Relevamiento automático de todos los SKUs, aplicando la sucursal **Hiper Olivos**.")
 
@@ -53,8 +29,8 @@ if st.button("🔍 Ejecutar relevamiento"):
         resultados = []
 
         for nombre, datos in productos.items():
-            ean = datos.get("ean")
-            product_id = datos.get("productId")
+            ean = datos["ean"]
+            product_id = datos["productId"]
 
             try:
                 url = f"https://www.carrefour.com.ar/api/catalog_system/pub/products/search?fq=productId:{product_id}"
@@ -71,7 +47,7 @@ if st.button("🔍 Ejecutar relevamiento"):
                 final_price = price_list if price_list > 0 else price
 
                 if final_price > 0:
-                    precio_formateado = format_ar_price_no_thousands(final_price)
+                    precio_formateado = f"{final_price:,.2f}".replace(",", "X").replace(".", ",").replace("X", "")
                     resultados.append({"EAN": ean, "Nombre": nombre, "Precio": precio_formateado})
                 else:
                     resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
@@ -79,16 +55,17 @@ if st.button("🔍 Ejecutar relevamiento"):
             except Exception:
                 resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
 
+        # --- Crear DataFrame y mostrarlo
         df = pd.DataFrame(resultados, columns=["EAN", "Nombre", "Precio"])
         st.success("✅ Relevamiento completado")
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df)
 
+        # --- Botón de descarga CSV
         fecha = datetime.now().strftime("%Y-%m-%d")
         csv = df.to_csv(index=False).encode('utf-8')
         st.download_button(
             label="⬇ Descargar CSV",
             data=csv,
-            file_name=f"precios_carrefour_{fecha}.csv",
+            file_name=f"precios_hiper_olivos_{fecha}.csv",
             mime="text/csv",
         )
-
