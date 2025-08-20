@@ -20,7 +20,6 @@ HEADERS = {
 }
 
 def format_ar_price_no_thousands(value):
-    """1795.0 -> '1795,00' (sin separador de miles)."""
     if value is None:
         return None
     return f"{float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", "")
@@ -30,16 +29,21 @@ def format_ar_price_no_thousands(value):
 # ===========================
 st.set_page_config(page_title="📊 Precios Carrefour", layout="wide")
 
-# ------ Menú lateral (sin page_link) ------
+# ------ Menú lateral robusto ------
 with st.sidebar:
     st.header("Menú")
     st.button("Carrefour", disabled=True)
-    open_coto = st.button("Ir a Coto ▶")
-    if open_coto:
+    # Intento 1: page_link a la página registrada
+    if hasattr(st, "page_link"):
+        st.page_link("pages/coto.py", label="Ir a Coto ▶", icon="🏷️")
+    # Intento 2: switch_page si existe
+    elif st.button("Ir a Coto ▶"):
         try:
-            st.switch_page("pages/coto.py")  # requiere Streamlit reciente
+            st.switch_page("pages/coto.py")
         except Exception:
-            st.info("Usa el selector de páginas en la barra lateral para abrir **Coto**.")
+            pass
+    # Intento 3: enlace clásico (multipage usa ?page=NombreDeLaPágina)
+    st.markdown("[Abrir Coto](?page=Coto)")
 
 st.title("📊 Relevamiento Precios Carrefour")
 st.write("Relevamiento automático de todos los SKUs, aplicando la sucursal **Hiper Olivos**.")
@@ -75,12 +79,10 @@ if st.button("🔍 Ejecutar relevamiento"):
             except Exception:
                 resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
 
-        # --- Crear DataFrame y mostrarlo
         df = pd.DataFrame(resultados, columns=["EAN", "Nombre", "Precio"])
         st.success("✅ Relevamiento completado")
         st.dataframe(df, use_container_width=True)
 
-        # --- Botón de descarga CSV
         fecha = datetime.now().strftime("%Y-%m-%d")
         csv = df.to_csv(index=False).encode('utf-8')
         st.download_button(
@@ -89,3 +91,4 @@ if st.button("🔍 Ejecutar relevamiento"):
             file_name=f"precios_carrefour_{fecha}.csv",
             mime="text/csv",
         )
+
