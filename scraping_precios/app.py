@@ -29,16 +29,20 @@ def format_ar_price_no_thousands(value):
 # 🎨 INTERFAZ STREAMLIT
 # ===========================
 st.set_page_config(page_title="📊 Precios Carrefour", layout="wide")
-st.title("📊 Relevamiento Precios Carrefour")
-st.write("Relevamiento automático de todos los SKUs, aplicando la sucursal **Hiper Olivos**.")
 
-# --- Menú lateral (enlaces a páginas)
+# ------ Menú lateral (sin page_link) ------
 with st.sidebar:
     st.header("Menú")
-    # En Streamlit multipágina, los archivos dentro de /pages aparecen solos,
-    # pero dejamos enlaces explícitos:
-    st.page_link("app.py", label="Carrefour", icon="🛒")
-    st.page_link("pages/coto.py", label="Coto", icon="🏷️")
+    st.button("Carrefour", disabled=True)
+    open_coto = st.button("Ir a Coto ▶")
+    if open_coto:
+        try:
+            st.switch_page("pages/coto.py")  # requiere Streamlit reciente
+        except Exception:
+            st.info("Usa el selector de páginas en la barra lateral para abrir **Coto**.")
+
+st.title("📊 Relevamiento Precios Carrefour")
+st.write("Relevamiento automático de todos los SKUs, aplicando la sucursal **Hiper Olivos**.")
 
 if st.button("🔍 Ejecutar relevamiento"):
     with st.spinner("⏳ Relevando... Esto puede tardar unos 2 minutos"):
