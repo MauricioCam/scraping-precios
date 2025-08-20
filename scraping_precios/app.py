@@ -69,3 +69,21 @@ if st.button("🔍 Ejecutar relevamiento"):
             file_name=f"precios_hiper_olivos_{fecha}.csv",
             mime="text/csv",
         )
+
+# ===========================
+# 🔗 Botón para ir a Coto (al final)
+# ===========================
+st.markdown("---")
+st.subheader("¿Querés relevar Coto?")
+
+# Opción A: Streamlit reciente (page_link)
+if hasattr(st, "page_link"):
+    st.page_link("pages/coto.py", label="Ir a Coto ▶", icon="🏷️")
+else:
+    # Opción B: Fallback con botón + switch_page (si existe)
+    if st.button("Ir a Coto ▶"):
+        try:
+            st.switch_page("pages/coto.py")  # algunas versiones lo soportan
+        except Exception:
+            st.info("Si no te redirige, abrí Coto desde el menú lateral o usá este enlace:")
+            st.markdown("[Abrir Coto](?page=Coto)")
