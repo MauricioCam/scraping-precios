@@ -120,7 +120,7 @@ with tab_carrefour:
 # 🏷️ Coto
 # ============================================
 with tab_coto:
-    st.subheader("Coto · Relevamiento por EAN (flujo robusto)")
+    st.subheader("Coto · Relevamiento por EAN")
     st.caption("Flujo: búsqueda (Ntk=product.eanPrincipal) → record.id → detalle (format=json) → sku.activePrice")
 
     # Constantes / headers Coto
@@ -256,4 +256,5 @@ with tab_coto:
                 file_name=f"precios_coto_{fecha}.csv",
                 mime="text/csv",
             )
+
 
