@@ -8,9 +8,8 @@ from urllib.parse import urljoin
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from productos_streamlit import productos  # {"Nombre": {"ean": "...", "productId": "..."}}
+from productos_streamlit import productos
 
-# --------- Config ---------
 st.set_page_config(page_title="🏷️ Precios Coto", layout="wide")
 st.title("🏷️ Relevamiento de precios Coto por EAN")
 st.caption("Salida: EAN, Nombre del Producto, Precio (sku.activePrice)")
@@ -26,7 +25,6 @@ HEADERS_COTO = {
     "Connection": "keep-alive",
 }
 
-# --------- Utilidades ---------
 def format_ar_price_no_thousands(value):
     if value is None:
         return None
@@ -70,17 +68,14 @@ def get_session():
     s.headers.update(HEADERS_COTO)
     return s
 
-# --------- Capa de datos (cacheadas) ---------
 @st.cache_data(ttl=3600, show_spinner=False)
 def coto_search_by_ean(ean: str, sucursal: str):
-    """Búsqueda JSON por EAN. Si trae precio, lo devolvemos (1 request)."""
     s = get_session()
     params = {"Dy": "1", "Ntt": ean, "idSucursal": sucursal, "format": "json"}
     r = s.get(urljoin(BASE_COTO, SEARCH_PATH_COTO), params=params, timeout=15)
     r.raise_for_status()
     data = r.json()
 
-    # Iterar posibles 'records'
     def iter_records(node):
         if isinstance(node, dict):
             if any(k in node for k in ("record.id", "product.repositoryId", "product.displayName")):
@@ -103,7 +98,6 @@ def coto_search_by_ean(ean: str, sucursal: str):
 
     name = coerce_first(find_key_recursive(best, "product.displayName")) or coerce_first(find_key_recursive(best, "record.title"))
 
-    # Intentar URL del producto
     url_fields = ["product.URL", "product.productURL", "product.seoUrl", "seo.url", "link", "url"]
     product_url = None
     for f in url_fields:
@@ -117,19 +111,13 @@ def coto_search_by_ean(ean: str, sucursal: str):
                 product_url = v
                 break
 
-    # Si el precio ya viene en búsqueda → 1 request total
     raw_price_search = coerce_first(find_key_recursive(best, "sku.activePrice"))
     price_search = cast_price_to_float(raw_price_search) if raw_price_search is not None else None
 
-    return {
-        "name": str(name) if name else None,
-        "product_url": product_url,
-        "price_from_search": price_search
-    }
+    return {"name": str(name) if name else None, "product_url": product_url, "price_from_search": price_search}
 
 @st.cache_data(ttl=1200, show_spinner=False)
 def coto_fetch_detail(product_url: str, sucursal: str):
-    """Detalle JSON con format=json → EAN, nombre y sku.activePrice."""
     s = get_session()
     if "?" in product_url:
         product_url = product_url.split("?", 1)[0]
@@ -143,22 +131,56 @@ def coto_fetch_detail(product_url: str, sucursal: str):
     raw_price = coerce_first(find_key_recursive(data, "sku.activePrice"))
     price_float = cast_price_to_float(raw_price)
 
-    return {
-        "ean": raw_ean,
-        "name": raw_name,
-        "price": price_float
-    }
+    return {"ean": raw_ean, "name": raw_name, "price": price_float}
 
 def process_one_ean(nombre_ref: str, ean: str, sucursal: str):
-    """Pipeline eficiente por EAN."""
     try:
         found = coto_search_by_ean(ean, sucursal)
         if not found:
             return {"EAN": ean, "Nombre": "No encontrado", "Precio": None}
 
-        # 1 request si la búsqueda ya trae precio
         if found.get("price_from_search") is not None:
-            return {
-                "EAN": ean,
-                "Nombre": found.get("name") or nombre_ref,
-                "Precio": format_ar_price_no_thousands(found["pr]()
+            return {"EAN": ean, "Nombre": found.get("name") or nombre_ref, "Precio": format_ar_price_no_thousands(found["price_from_search"])}
+
+        if not found.get("product_url"):
+            return {"EAN": ean, "Nombre": found.get("name") or nombre_ref, "Precio": None}
+
+        det = coto_fetch_detail(found["product_url"], sucursal)
+        return {"EAN": det.get("ean") or ean, "Nombre": det.get("name") or found.get("name") or nombre_ref, "Precio": format_ar_price_no_thousands(det.get("price"))}
+    except Exception as ex:
+        return {"EAN": ean, "Nombre": f"Error: {ex}", "Precio": None}
+
+# ---- Sidebar y ejecución ----
+with st.sidebar:
+    st.header("Opciones")
+    suc = st.text_input("idSucursal (Coto)", value=DEFAULT_SUCURSAL)
+    max_workers = st.slider("Concurrencia (hilos)", 1, 20, 10)
+
+st.write(f"Productos cargados: **{len(productos)}**")
+
+if st.button("⚡ Ejecutar relevamiento - Coto"):
+    eans = [(nombre, str(d.get("ean", "")).strip()) for nombre, d in productos.items() if str(d.get("ean", "")).strip()]
+    if not eans:
+        st.warning("No hay EANs válidos en productos_streamlit.py")
+    else:
+        all_rows, total, done = [], len(eans), 0
+        prog = st.progress(0, text="Procesando EANs...")
+
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = [ex.submit(process_one_ean, nombre, ean, suc or DEFAULT_SUCURSAL) for nombre, ean in eans]
+            for fut in as_completed(futures):
+                all_rows.append(fut.result())
+                done += 1
+                prog.progress(done / max(1, total), text=f"Procesando EANs... {done}/{total}")
+
+        df = pd.DataFrame(all_rows, columns=["EAN", "Nombre", "Precio"]).sort_values("Nombre")
+        st.success("✅ Relevamiento Coto completado")
+        st.dataframe(df, use_container_width=True)
+
+        fecha = datetime.now().strftime("%Y-%m-%d")
+        st.download_button(
+            "⬇ Descargar CSV (Coto)",
+            df.to_csv(index=False).encode('utf-8'),
+            file_name=f"precios_coto_{fecha}.csv",
+            mime="text/csv",
+        )
