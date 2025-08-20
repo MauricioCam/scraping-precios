@@ -11,7 +11,7 @@ from productos_streamlit import productos
 # ===========================
 # 🔹 COOKIE de Hiper Olivos
 # ===========================
-COOKIE_SEGMENT = "eyJjYW1wYWlnbnMiOm51bGwsImNoYW5uZWwiOiIxIiwicHJpY2VUYWJsZXMiOm51bGwsInJlZ2lvbklkIjpudWxsLCJ1dG1fY2FtcGFpZ24iOm51bGwsInV0bV9zb3VyY2UiOm51bGwsInV0bWlfY2FtcGFpZ24iOm51bGwsImN1cnJlbmN5Q29kZSI6IkFSUyIsImN1cnJlbmN5U3ltYm9sIjoiJCIsImNvdW50cnlDb2RlIjoiQVJHIiwiY3VsdHVyZUluZm8iOiJlcy1BUiIsImFkbWluX2N1dHR1cmVJbmZvIjoiZXMtQVIiLCJjaGFubmVsUHJpdmFjeSI6InB1YmxpYyJ9"
+COOKIE_SEGMENT = "eyJjYW1wYWlnbnMiOm51bGwsImNoYW5uZWwiOiIxIiwicHJpY2VUYWJsZXMiOm51bGwsInJlZ2lvbklkIjpudWxsLCJ1dG1fY2FtcGFpZ24iOm51bGwsInV0bV9zb3VyY2UiOm51bGwsInV0bWlfY2FtcGFpZ24iOm51bGwsImN1cnJlbmN5Q29kZSI6IkFSUyIsImN1cnJlbmN5U3ltYm9sIjoiJCIsImNvdW50cnlDb2RlIjoiQVJHIiwiY3VsdHVyZUluZm8iOiJlcy1BUiIsImFkbWluX2N1dHR1cmVJbmZvIjoiZXMtQVIiLCJjaGFubWVsUHJpdmFjeSI6InB1YmxpYyJ9"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
@@ -71,19 +71,18 @@ if st.button("🔍 Ejecutar relevamiento"):
         )
 
 # ===========================
-# 🔗 Botón para ir a Coto (al final)
+# 🔗 Botón para ir a Coto (al final, sin page_link)
 # ===========================
 st.markdown("---")
 st.subheader("¿Querés relevar Coto?")
 
-# Opción A: Streamlit reciente (page_link)
-if hasattr(st, "page_link"):
-    st.page_link("pages/coto.py", label="Ir a Coto ▶", icon="🏷️")
-else:
-    # Opción B: Fallback con botón + switch_page (si existe)
-    if st.button("Ir a Coto ▶"):
-        try:
-            st.switch_page("pages/coto.py")  # algunas versiones lo soportan
-        except Exception:
-            st.info("Si no te redirige, abrí Coto desde el menú lateral o usá este enlace:")
-            st.markdown("[Abrir Coto](?page=Coto)")
+# Botón que redirige con meta refresh al multipage (?page=Coto)
+if st.button("Ir a Coto ▶", type="primary"):
+    # Si el archivo se llama pages/coto.py, el nombre de la página es "Coto"
+    st.markdown(
+        '<meta http-equiv="refresh" content="0; url=?page=Coto" />',
+        unsafe_allow_html=True
+    )
+
+# Enlace de respaldo por si el botón no redirige (abre en la misma pestaña)
+st.markdown("[Abrir Coto](?page=Coto)")
