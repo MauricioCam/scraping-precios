@@ -8,8 +8,7 @@ from urllib.parse import urljoin
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# EANs desde tu diccionario
-from productos_streamlit import productos
+from productos_streamlit import productos  # {"Nombre": {"ean": "...", "productId": "..."}}
 
 # --------- Config ---------
 st.set_page_config(page_title="🏷️ Precios Coto", layout="wide")
@@ -162,55 +161,4 @@ def process_one_ean(nombre_ref: str, ean: str, sucursal: str):
             return {
                 "EAN": ean,
                 "Nombre": found.get("name") or nombre_ref,
-                "Precio": format_ar_price_no_thousands(found["price_from_search"])
-            }
-
-        # Si no, ir al detalle
-        if not found.get("product_url"):
-            return {"EAN": ean, "Nombre": found.get("name") or nombre_ref, "Precio": None}
-
-        det = coto_fetch_detail(found["product_url"], sucursal)
-        return {
-            "EAN": det.get("ean") or ean,
-            "Nombre": det.get("name") or found.get("name") or nombre_ref,
-            "Precio": format_ar_price_no_thousands(det.get("price"))
-        }
-    except Exception as ex:
-        return {"EAN": ean, "Nombre": f"Error: {ex}", "Precio": None}
-
-# --------- UI ---------
-with st.sidebar:
-    st.header("Opciones")
-    suc = st.text_input("idSucursal (Coto)", value=DEFAULT_SUCURSAL, help="Se aplica a búsquedas y detalles.")
-    max_workers = st.slider("Concurrencia (hilos)", 1, 20, 10)
-
-st.write(f"Productos cargados: **{len(productos)}**")
-
-if st.button("⚡ Ejecutar relevamiento - Coto"):
-    eans = [(nombre, str(d.get("ean", "")).strip()) for nombre, d in productos.items() if str(d.get("ean", "")).strip()]
-    if not eans:
-        st.warning("No hay EANs válidos en productos_streamlit.py")
-    else:
-        all_rows = []
-        total = len(eans)
-        prog = st.progress(0, text="Procesando EANs...")
-        done = 0
-
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futures = [ex.submit(process_one_ean, nombre, ean, suc or DEFAULT_SUCURSAL) for nombre, ean in eans]
-            for fut in as_completed(futures):
-                all_rows.append(fut.result())
-                done += 1
-                prog.progress(done / max(1, total), text=f"Procesando EANs... {done}/{total}")
-
-        df = pd.DataFrame(all_rows, columns=["EAN", "Nombre", "Precio"]).sort_values("Nombre")
-        st.success("✅ Relevamiento Coto completado")
-        st.dataframe(df, use_container_width=True)
-
-        fecha = datetime.now().strftime("%Y-%m-%d")
-        st.download_button(
-            "⬇ Descargar CSV (Coto)",
-            df.to_csv(index=False).encode('utf-8'),
-            file_name=f"precios_coto_{fecha}.csv",
-            mime="text/csv",
-        )
+                "Precio": format_ar_price_no_thousands(found["pr]()
