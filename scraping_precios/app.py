@@ -257,7 +257,7 @@ with tab_coto:
                 mime="text/csv",
             )
 # ============================================
-# 🟥 Jumbo
+# Jumbo
 # ============================================
 with tab_jumbo:
     st.subheader("Jumbo · Relevamiento por EAN (VTEX)")
@@ -268,7 +268,7 @@ with tab_jumbo:
         "Accept": "application/json,text/plain,*/*",
     }
 
-    if st.button("🟥 Ejecutar relevamiento (Jumbo)"):
+    if st.button("Ejecutar relevamiento (Jumbo)"):
         with st.spinner("⏳ Relevando Jumbo..."):
             resultados = []
             for nombre, datos in productos.items():
@@ -337,3 +337,4 @@ with tab_jumbo:
                 file_name=f"precios_jumbo_{fecha}.csv",
                 mime="text/csv",
             )
+
