@@ -56,7 +56,7 @@ def iter_records(node):
 # ============================================
 # Pestañas
 # ============================================
-tab_carrefour, tab_coto, tab_jumbo = st.tabs(["🛒 Carrefour", "🏷️ Coto", "🟥 Jumbo"])
+tab_carrefour, tab_coto, tab_jumbo = st.tabs(["🛒 Carrefour", "🏷️ Coto", "Jumbo"])
 
 # ============================================
 # 🛒 Carrefour
@@ -257,7 +257,7 @@ with tab_coto:
                 mime="text/csv",
             )
 # ============================================
-# Jumbo
+# 🟥 Jumbo
 # ============================================
 with tab_jumbo:
     st.subheader("Jumbo · Relevamiento por EAN (VTEX)")
@@ -337,4 +337,3 @@ with tab_jumbo:
                 file_name=f"precios_jumbo_{fecha}.csv",
                 mime="text/csv",
             )
-
