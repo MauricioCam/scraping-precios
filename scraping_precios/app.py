@@ -56,14 +56,14 @@ def iter_records(node):
 # ============================================
 # Pestañas
 # ============================================
-tab_carrefour, tab_coto, tab_jumbo = st.tabs(["🛒 Carrefour", "🏷️ Coto", "Jumbo"])
+tab_carrefour, tab_coto, tab_jumbo, tab_coope = st.tabs(["🛒 Carrefour", "🏷️ Coto", "🟢 Jumbo", "🟡 Cooperativa"])
 
 # ============================================
-# 🛒 Carrefour
+# 🛒 Carrefour (por EAN)
 # ============================================
 with tab_carrefour:
     st.subheader("Carrefour · Hiper Olivos")
-    st.write("Relevamiento automático de todos los SKUs, aplicando la sucursal **Hiper Olivos**.")
+    st.write("Relevamiento automático de todos los SKUs, aplicando la sucursal **Hiper Olivos**. (Ahora busca por **EAN**)")
 
     # --- Cookie / headers Carrefour (VTEX)
     COOKIE_SEGMENT = (
@@ -74,33 +74,62 @@ with tab_carrefour:
     HEADERS_CARR = {
         "User-Agent": "Mozilla/5.0",
         "Cookie": f"vtex_segment={COOKIE_SEGMENT}",
+        "Accept": "application/json,text/plain,*/*",
     }
 
     if st.button("🔍 Ejecutar relevamiento (Carrefour)"):
         with st.spinner("⏳ Relevando Carrefour..."):
             resultados = []
             for nombre, datos in productos.items():
-                ean = datos.get("ean")
-                product_id = datos.get("productId")
+                ean = str(datos.get("ean") or "").strip()
                 try:
-                    url = f"https://www.carrefour.com.ar/api/catalog_system/pub/products/search?fq=productId:{product_id}"
-                    r = requests.get(url, headers=HEADERS_CARR, timeout=10)
+                    if not ean:
+                        resultados.append({"EAN": "", "Nombre": nombre, "Precio": "Revisar"})
+                        continue
+
+                    # Buscar por EAN en VTEX
+                    url = f"https://www.carrefour.com.ar/api/catalog_system/pub/products/search?fq=alternateIds_Ean:{ean}"
+                    r = requests.get(url, headers=HEADERS_CARR, timeout=12)
                     data = r.json()
 
                     if not data:
                         resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
                         continue
 
-                    offer = data[0]['items'][0]['sellers'][0]['commertialOffer']
-                    price_list = offer.get('ListPrice', 0)
-                    price = offer.get('Price', 0)
+                    prod = data[0]
+                    items = prod.get("items") or []
+
+                    # Elegimos el item que matchee el EAN (ean o referenceId.Value). Si no, el primero.
+                    item_sel = None
+                    for it in items:
+                        if str(it.get("ean") or "").strip() == ean:
+                            item_sel = it
+                            break
+                        for ref in (it.get("referenceId") or []):
+                            if str(ref.get("Value") or "").strip() == ean:
+                                item_sel = it
+                                break
+                        if item_sel:
+                            break
+                    if not item_sel and items:
+                        item_sel = items[0]
+
+                    if not item_sel or not item_sel.get("sellers"):
+                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+                        continue
+
+                    offer = item_sel["sellers"][0].get("commertialOffer", {})
+                    price_list = float(offer.get("ListPrice") or 0)
+                    price = float(offer.get("Price") or 0)
                     final_price = price_list if price_list > 0 else price
 
                     if final_price and final_price > 0:
                         precio_formateado = format_ar_price_no_thousands(final_price)
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": precio_formateado})
+                        nombre_prod = prod.get("productName") or nombre
+                        resultados.append({"EAN": ean, "Nombre": nombre_prod, "Precio": precio_formateado})
                     else:
                         resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+
                 except Exception:
                     resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
 
@@ -257,7 +286,7 @@ with tab_coto:
                 mime="text/csv",
             )
 # ============================================
-# 🟥 Jumbo
+# 🟢 Jumbo
 # ============================================
 with tab_jumbo:
     st.subheader("Jumbo · Relevamiento por EAN (VTEX)")
@@ -335,5 +364,60 @@ with tab_jumbo:
                 label="⬇ Descargar CSV (Jumbo)",
                 data=df.to_csv(index=False).encode("utf-8"),
                 file_name=f"precios_jumbo_{fecha}.csv",
+                mime="text/csv",
+            )
+# ============================================
+# 🟡 Cooperativa Obrera
+# ============================================
+with tab_coope:
+    st.subheader("Cooperativa Obrera · Relevamiento por cod_coope")
+    st.caption("Consulta el endpoint oficial y toma **precio de lista**.")
+
+    HEADERS_COOPE = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json,text/plain,*/*",
+    }
+
+    if st.button("🟡 Ejecutar relevamiento (Cooperativa Obrera)"):
+        with st.spinner("⏳ Relevando Cooperativa Obrera..."):
+            resultados = []
+            for nombre, datos in productos.items():
+                ean = str(datos.get("ean", "")).strip()
+                cod = str(datos.get("cod_coope", "")).strip()
+
+                row = {"EAN": ean, "Nombre": nombre, "Precio": "Revisar"}
+                if not cod:
+                    resultados.append(row)
+                    continue
+
+                try:
+                    url = f"https://api.lacoopeencasa.coop/api/articulo/detalle?cod_interno={cod}&simple=false"
+                    r = requests.get(url, headers=HEADERS_COOPE, timeout=12)
+                    r.raise_for_status()
+                    j = r.json() if r.headers.get("content-type","").startswith("application/json") else {}
+
+                    datos_node = (j or {}).get("datos") or {}
+                    precio_ant = datos_node.get("precio_anterior")
+
+                    # precio_anterior viene como string ("919.00")
+                    val = float(precio_ant) if precio_ant not in (None, "") else 0.0
+
+                    if val > 0:
+                        row["Precio"] = format_ar_price_no_thousands(val)
+
+                except Exception:
+                    pass  # dejamos "Revisar" si falla algo
+
+                resultados.append(row)
+
+            df = pd.DataFrame(resultados, columns=["EAN", "Nombre", "Precio"])
+            st.success("✅ Relevamiento Cooperativa Obrera completado")
+            st.dataframe(df, use_container_width=True)
+
+            fecha = datetime.now().strftime("%Y-%m-%d")
+            st.download_button(
+                label="⬇ Descargar CSV (Cooperativa Obrera)",
+                data=df.to_csv(index=False).encode("utf-8"),
+                file_name=f"precios_cooperativa_{fecha}.csv",
                 mime="text/csv",
             )
