@@ -144,10 +144,6 @@ with tab_carrefour:
                 file_name=f"precios_carrefour_{fecha}.csv",
                 mime="text/csv",
             )
-# ============================================
-# Pestañas (añade Día)
-# ============================================
-tab_carrefour, tab_coto, tab_dia = st.tabs(["🛒 Carrefour", "🏷️ Coto", "🟥 Día"])
 
 # ============================================
 # 🟥 Día
@@ -500,6 +496,7 @@ with tab_coope:
                 file_name=f"precios_cooperativa_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
