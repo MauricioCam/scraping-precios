@@ -9,7 +9,7 @@ from urllib.parse import urljoin
 # ============================================
 st.set_page_config(page_title="📊 Relevamiento de Precios", layout="wide")
 st.title("📊 Relevamiento de Precios")
-st.caption("Carrefour y Coto — usando EANs de productos_streamlit.py")
+st.caption("Esta herramienta tiene por objetivo relevar los precios de todo el portfolio de forma automática")
 
 # ============================================
 # Datos de entrada (diccionario compartido)
@@ -421,3 +421,4 @@ with tab_coope:
                 file_name=f"precios_cooperativa_{fecha}.csv",
                 mime="text/csv",
             )
+
