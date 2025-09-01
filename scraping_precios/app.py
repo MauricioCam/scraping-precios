@@ -56,7 +56,7 @@ def iter_records(node):
 # ============================================
 # Pestañas
 # ============================================
-tab_carrefour, tab_coto, tab_jumbo, tab_coope = st.tabs(["🛒 Carrefour", "🏷️ Coto", "🟢 Jumbo", "🟡 Cooperativa"])
+tab_carrefour, tab_dia, tab_coto, tab_jumbo, tab_coope = st.tabs(["🛒 Carrefour", "🟥 Día","🏷️ Coto", "🟢 Jumbo", "🟡 Cooperativa"])
 
 # ============================================
 # 🛒 Carrefour (por EAN)
@@ -142,6 +142,80 @@ with tab_carrefour:
                 label="⬇ Descargar CSV (Carrefour)",
                 data=df.to_csv(index=False).encode('utf-8'),
                 file_name=f"precios_carrefour_{fecha}.csv",
+                mime="text/csv",
+            )
+
+# ============================================
+# 🟥 Día
+# ============================================
+with tab_dia:
+    st.subheader("Día · Relevamiento por cod_dia (skuId)")
+    st.caption("Consulta VTEX por **skuId (cod_dia)** y toma **commertialOffer.ListPrice** del primer item/seller.")
+
+    HEADERS_DIA = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json,text/plain,*/*",
+    }
+
+    if st.button("🔴 Ejecutar relevamiento (Día)"):
+        with st.spinner("⏳ Relevando Día..."):
+            resultados = []
+            for nombre, datos in productos.items():
+                cod_dia = str(datos.get("cod_dia") or "").strip()
+                ean = datos.get("ean")
+                try:
+                    if not cod_dia:
+                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+                        continue
+
+                    # VTEX search por skuId (cod_dia)
+                    url = f"https://diaonline.supermercadosdia.com.ar/api/catalog_system/pub/products/search?fq=skuId:{cod_dia}"
+                    r = requests.get(url, headers=HEADERS_DIA, timeout=12)
+                    r.raise_for_status()
+                    data = r.json()
+
+                    if not data:
+                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+                        continue
+
+                    prod = data[0]
+                    items = prod.get("items") or []
+
+                    # Elegimos el item cuyo itemId == cod_dia; si no aparece, usamos el primero
+                    item_sel = None
+                    for it in items:
+                        if str(it.get("itemId") or "").strip() == cod_dia:
+                            item_sel = it
+                            break
+                    if not item_sel and items:
+                        item_sel = items[0]
+
+                    if not item_sel:
+                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+                        continue
+
+                    offer = (item_sel.get("sellers") or [{}])[0].get("commertialOffer", {}) if item_sel.get("sellers") else {}
+                    list_price = offer.get("ListPrice", 0) or 0
+
+                    if list_price > 0:
+                        precio_formateado = format_ar_price_no_thousands(list_price)
+                        nombre_prod = prod.get("productName") or nombre
+                        resultados.append({"EAN": ean, "Nombre": nombre_prod, "Precio": precio_formateado})
+                    else:
+                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+
+                except Exception:
+                    resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+
+            df = pd.DataFrame(resultados, columns=["EAN", "Nombre", "Precio"])
+            st.success("✅ Relevamiento Día completado")
+            st.dataframe(df, use_container_width=True)
+
+            fecha = datetime.now().strftime("%Y-%m-%d")
+            st.download_button(
+                label="⬇ Descargar CSV (Día)",
+                data=df.to_csv(index=False).encode("utf-8"),
+                file_name=f"precios_dia_{fecha}.csv",
                 mime="text/csv",
             )
 
@@ -421,4 +495,5 @@ with tab_coope:
                 file_name=f"precios_cooperativa_{fecha}.csv",
                 mime="text/csv",
             )
+
 
