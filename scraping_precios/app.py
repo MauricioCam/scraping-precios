@@ -56,7 +56,7 @@ def iter_records(node):
 # ============================================
 # Pestañas
 # ============================================
-tab_carrefour, tab_dia, tab_coto, tab_jumbo, tab_coope = st.tabs(["🛒 Carrefour", "🟥 Día","🏷️ Coto", "🟢 Jumbo", "🟡 Cooperativa"])
+tab_carrefour, tab_dia, tab_coto, tab_jumbo, tab_vea, tab_coope = st.tabs(["🛒 Carrefour", "🟥 Día","🏷️ Coto", "🟢 Jumbo", "🟢 Vea", "🟡 Cooperativa"])
 
 # ============================================
 # 🛒 Carrefour (por EAN)
@@ -441,6 +441,88 @@ with tab_jumbo:
                 file_name=f"precios_jumbo_{fecha}.csv",
                 mime="text/csv",
             )
+
+# ============================================
+# 🟢 Vea
+# ============================================
+with tab_vea:
+    st.subheader("Vea · Relevamiento por EAN (VTEX)")
+    st.caption("Consulta por **EAN** y toma **Installments[].Value** del primer item/seller. Sin cookie.")
+
+    HEADERS_VEA = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json,text/plain,*/*",
+    }
+
+    if st.button("Ejecutar relevamiento (VEA)"):
+        with st.spinner("⏳ Relevando Vea..."):
+            resultados = []
+            for nombre, datos in productos.items():
+                ean = str(datos.get("ean") or "").strip()
+                try:
+                    if not ean:
+                        resultados.append({"EAN": "", "Nombre": nombre, "Precio": "Revisar"})
+                        continue
+
+                    # VTEX search por EAN
+                    url = f"https://www.vea.com.ar/api/catalog_system/pub/products/search?fq=alternateIds_Ean:{ean}"
+                    r = requests.get(url, headers=HEADERS_VEA, timeout=12)
+                    data = r.json()
+
+                    if not data:
+                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+                        continue
+
+                    prod = data[0]
+                    items = prod.get("items") or []
+
+                    # Elegimos el item que matchee el EAN (ean o referenceId.Value). Si no, el primero.
+                    item_sel = None
+                    for it in items:
+                        if str(it.get("ean") or "").strip() == ean:
+                            item_sel = it
+                            break
+                        for ref in (it.get("referenceId") or []):
+                            if str(ref.get("Value") or "").strip() == ean:
+                                item_sel = it
+                                break
+                        if item_sel:
+                            break
+                    if not item_sel and items:
+                        item_sel = items[0]
+
+                    # Obtenemos Installments[].Value del primer seller
+                    installments = []
+                    try:
+                        installments = (item_sel.get("sellers") or [])[0].get("commertialOffer", {}).get("Installments") or []
+                    except Exception:
+                        installments = []
+
+                    # Tomamos el mayor Value disponible (suele ser 1 cuota, p.ej. American Express)
+                    vals = [float(x.get("Value") or 0) for x in installments if isinstance(x, dict)]
+                    price_val = max(vals) if vals else 0.0
+
+                    if price_val > 0:
+                        precio_formateado = format_ar_price_no_thousands(price_val)
+                        nombre_prod = prod.get("productName") or nombre
+                        resultados.append({"EAN": ean, "Nombre": nombre_prod, "Precio": precio_formateado})
+                    else:
+                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+
+                except Exception:
+                    resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+
+            df = pd.DataFrame(resultados, columns=["EAN", "Nombre", "Precio"])
+            st.success("✅ Relevamiento Vea completado")
+            st.dataframe(df, use_container_width=True)
+
+            fecha = datetime.now().strftime("%Y-%m-%d")
+            st.download_button(
+                label="⬇ Descargar CSV (Vea)",
+                data=df.to_csv(index=False).encode("utf-8"),
+                file_name=f"precios_vea_{fecha}.csv",
+                mime="text/csv",
+            )
 # ============================================
 # 🟡 Cooperativa Obrera
 # ============================================
@@ -496,6 +578,7 @@ with tab_coope:
                 file_name=f"precios_cooperativa_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
