@@ -56,7 +56,7 @@ def iter_records(node):
 # ============================================
 # Pestañas
 # ============================================
-tab_carrefour, tab_dia, tab_chango, tab_coto, tab_jumbo, tab_vea, tab_coope = st.tabs(["🛒 Carrefour", "🟥 Día", "🟢 ChangoMás", "🏷️ Coto", "🟢 Jumbo", "🟢 Vea", "🟡 Cooperativa"])
+tab_carrefour, tab_dia, tab_chango, tab_coto, tab_jumbo, tab_vea, tab_coope, tab_hiper = st.tabs(["🛒 Carrefour", "🟥 Día", "🟢 ChangoMás", "🏷️ Coto", "🟢 Jumbo", "🟢 Vea", "🟡 Cooperativa", "🔴 Libertad"])
 
 # ============================================
 # 🛒 Carrefour (por EAN)
@@ -732,6 +732,89 @@ with tab_coope:
                 label="⬇ Descargar CSV (Cooperativa Obrera)",
                 data=df.to_csv(index=False).encode("utf-8"),
                 file_name=f"precios_cooperativa_{fecha}.csv",
+                mime="text/csv",
+            )
+
+# ============================================
+# 🔴 HiperLibertad (ListPrice por EAN)
+# ============================================
+with tab_hiper:
+    st.subheader("HiperLibertad · ListPrice por EAN")
+
+    BASE_HIPER = "https://www.hiperlibertad.com.ar"
+    SC_DEFAULT = "1"  # política comercial usual (?sc=1)
+    HEADERS_HIPER = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) PythonRequests/2.x",
+        "Accept": "application/json, text/plain, */*",
+    }
+    TIMEOUT = (3, 8)  # (connect, read) — timeouts optimizados
+
+    def _fetch_catalog_by_ean(ean: str, sc: str = SC_DEFAULT):
+        if not ean:
+            return None
+        url = f"{BASE_HIPER}/api/catalog_system/pub/products/search"
+        params = {"fq": f"alternateIds_Ean:{ean}", "sc": sc}
+        r = requests.get(url, headers=HEADERS_HIPER, params=params, timeout=TIMEOUT)
+        if r.status_code != 200:
+            return None
+        try:
+            js = r.json()
+            return js if isinstance(js, list) and js else None
+        except Exception:
+            return None
+
+    def _extract_list_price_only(js) -> float:
+        try:
+            # Prioridad: primer ListPrice > 0
+            for prod in js:
+                for item in (prod.get("items") or []):
+                    for seller in (item.get("sellers") or []):
+                        co = seller.get("commertialOffer") or {}
+                        lp = co.get("ListPrice")
+                        if isinstance(lp, (int, float)) and lp > 0:
+                            return float(lp)
+            # Si no hubo >0, devolver 0 si hay numérico
+            for prod in js:
+                for item in (prod.get("items") or []):
+                    for seller in (item.get("sellers") or []):
+                        co = seller.get("commertialOffer") or {}
+                        lp = co.get("ListPrice")
+                        if isinstance(lp, (int, float)):
+                            return float(lp)  # probablemente 0.0
+        except Exception:
+            pass
+        return 0.0
+
+    if st.button("🔎 Ejecutar relevamiento (HiperLibertad)"):
+        with st.spinner("⏳ Relevando HiperLibertad..."):
+            filas = []
+            total = len(productos)
+            prog = st.progress(0, text="Procesando…")
+
+            for i, (nombre, meta) in enumerate(productos.items(), start=1):
+                ean = str(meta.get("ean", "")).strip()
+                try:
+                    js = _fetch_catalog_by_ean(ean, sc=SC_DEFAULT)
+                    if js:
+                        lp = _extract_list_price_only(js)
+                        precio_fmt = format_ar_price_no_thousands(lp) if lp is not None else "0,00"
+                    else:
+                        precio_fmt = "Revisar"
+                except Exception:
+                    precio_fmt = "Revisar"
+
+                filas.append({"EAN": ean, "Nombre": nombre, "ListPrice": precio_fmt})
+                prog.progress(i / max(1, total), text=f"Procesando… {i}/{total}")
+
+            dfh = pd.DataFrame(filas, columns=["EAN", "Nombre", "ListPrice"])
+            st.success("✅ Relevamiento HiperLibertad completado")
+            st.dataframe(dfh, use_container_width=True)
+
+            fecha = datetime.now().strftime("%Y-%m-%d")
+            st.download_button(
+                "⬇ Descargar CSV (HiperLibertad)",
+                dfh.to_csv(index=False).encode("utf-8"),
+                file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
 
