@@ -56,7 +56,7 @@ def iter_records(node):
 # ============================================
 # Pestañas
 # ============================================
-tab_carrefour, tab_dia, tab_coto, tab_jumbo, tab_vea, tab_coope = st.tabs(["🛒 Carrefour", "🟥 Día","🏷️ Coto", "🟢 Jumbo", "🟢 Vea", "🟡 Cooperativa"])
+tab_carrefour, tab_dia, tab_chango, tab_coto, tab_jumbo, tab_vea, tab_coope = st.tabs(["🛒 Carrefour", "🟥 Día", "🟢 ChangoMás", "🏷️ Coto", "🟢 Jumbo", "🟢 Vea", "🟡 Cooperativa"])
 
 # ============================================
 # 🛒 Carrefour (por EAN)
@@ -216,6 +216,162 @@ with tab_dia:
                 label="⬇ Descargar CSV (Día)",
                 data=df.to_csv(index=False).encode("utf-8"),
                 file_name=f"precios_dia_{fecha}.csv",
+                mime="text/csv",
+            )
+    
+# ============================================
+# 🟢 ChangoMás
+# ============================================
+with tab_chango:
+    st.subheader("ChangoMás · Relevamiento por EAN (VTEX)")
+    st.caption("Consulta por **EAN** usando VTEX Search (`alternateIds_Ean`) con `sc`. Early exit + timeouts cortos.")
+
+    # Parámetros
+    DEFAULT_SEGMENT = (
+        "eyJjYW1wYWlnbnMiOm51bGwsImNoYW5uZWwiOiIxIiwicHJpY2VUYWJsZXMiOm51bGwsInJlZ2lvbklkIjoidjIuNDdERkY5REI3QkE5NEEyMEI1ODRGRjYzQTA3RUIxQ0EiLCJ1dG1fY2FtcGFpZ24iOm51bGwsInV0bV9zb3VyY2UiOm51bGwsInV0bWlfY2FtcGFpZ24iOm51bGwsImN1cnJlbmN5Q29kZSI6IkFSUyIsImN1cnJlbmN5U3ltYm9sIjoiJCIsImNvdW50cnlDb2RlIjoiQVJHIiwiY3VsdHVyZUluZm8iOiJlcy1BUiIsImFkbWluX2N1bHR1cmVJbmZvIjoiZXMtQVIiLCJjaGFubmVsUHJpdmFjeSI6InB1YmxpYyJ9"
+    )
+    vtex_segment = st.text_input("vtex_segment (ChangoMás)", value=DEFAULT_SEGMENT, type="password")
+    sc_primary = st.text_input("Sales channel (sc)", value="1", help="Canal de ventas VTEX, ej: 1")
+    show_debug_cm = st.checkbox("Mostrar requests (debug)", value=False)
+
+    # Constantes
+    BASE_CM = "https://www.masonline.com.ar"
+    # 🔧 Timeouts (connect, read) más cortos
+    TIMEOUTS = (3, 7)
+
+    def ean_matches_item(ean: str, item: dict) -> bool:
+        if str(item.get("ean", "")).strip() == str(ean):
+            return True
+        for ref in (item.get("referenceId") or []):
+            if str(ref.get("Value", "")).strip() == str(ean):
+                return True
+        return False
+
+    def first_listprice_or_price(item: dict):
+        """
+        EARLY EXIT:
+        - Devuelve inmediatamente el primer ListPrice > 0 que encuentre (corta el loop).
+        - Si no hay LP>0, recuerda el mejor Price>0 para fallback.
+        - Retorna float o 0.0 si nada sirve.
+        """
+        best_price = 0.0
+        for seller in (item.get("sellers") or []):
+            co = seller.get("commertialOffer") or {}
+            lp = float(co.get("ListPrice") or 0)
+            if lp > 0:
+                return lp  # 🎯 early exit: ya tenemos ListPrice válido
+            p = float(co.get("Price") or 0)
+            if p > best_price:
+                best_price = p
+        return best_price  # puede ser 0.0
+
+    def vt_search_by_ean(session: requests.Session, ean: str, sc: str, headers: dict):
+        """Search por EAN y sc. Retorna (product_json, items_list) o (None, None)."""
+        url = f"{BASE_CM}/api/catalog_system/pub/products/search?fq=alternateIds_Ean:{ean}&sc={sc}"
+        r = session.get(url, headers=headers, timeout=TIMEOUTS)
+        if show_debug_cm:
+            st.text(f"SEARCH {sc}: {r.url} | {r.status_code} | {r.headers.get('content-type')}")
+        r.raise_for_status()
+        data = r.json()
+        if not data:
+            return None, None
+        prod = data[0]
+        items = prod.get("items", []) or []
+        return prod, items
+
+    def vt_variations_price(session: requests.Session, product_id: str, ean: str, sc: str, headers: dict):
+        """
+        Fallback: /pub/products/variations/{productId}?sc=...
+        Busca el SKU cuyo EAN matchee. Retorna (name, price_float|None).
+        """
+        url = f"{BASE_CM}/api/catalog_system/pub/products/variations/{product_id}?sc={sc}"
+        r = session.get(url, headers=headers, timeout=TIMEOUTS)
+        if show_debug_cm:
+            st.text(f"VARIATIONS {sc}: {r.url} | {r.status_code}")
+        r.raise_for_status()
+        data = r.json()
+        name = data.get("name")
+        for sku in (data.get("skus") or []):
+            if str(sku.get("ean", "")).strip() == str(ean):
+                lp = float(sku.get("listPrice") or 0)
+                if lp > 0:
+                    return name, lp  # 🎯 early exit si hay LP>0
+                bp = float(sku.get("bestPrice") or 0)
+                return name, (bp if bp > 0 else None)
+        return name, None
+
+    st.markdown(f"**Productos cargados:** {len(productos)}")
+
+    if st.button("🟢 Ejecutar relevamiento (ChangoMás)"):
+        with st.spinner("⏳ Relevando ChangoMás..."):
+            s = requests.Session()
+            headers_cm = {
+                "User-Agent": "Mozilla/5.0",
+                "Cookie": f"vtex_segment={vtex_segment}",
+                "Accept": "application/json,text/plain,*/*",
+            }
+
+            resultados = []
+            total = len(productos)
+            prog = st.progress(0, text="Procesando…")
+            done = 0
+
+            for nombre, datos in productos.items():
+                ean = str(datos.get("ean", "")).strip()
+                if not ean:
+                    continue
+
+                row = {"EAN": ean, "Nombre": nombre, "Precio": "Revisar"}
+                try:
+                    found_price = None
+                    found_name = None
+
+                    prod, items = vt_search_by_ean(s, ean, sc_primary.strip(), headers_cm)
+                    if prod and items:
+                        # Preferimos item que matchee EAN; si no, tomamos el primero que dé precio > 0.
+                        matching = [it for it in items if ean_matches_item(ean, it)]
+                        candidates = matching if matching else items
+
+                        price_num = 0.0
+                        for it in candidates:
+                            price_num = first_listprice_or_price(it)
+                            if price_num > 0:
+                                break  # 🎯 early exit items
+
+                        found_name = prod.get("productName") or nombre
+
+                        if price_num <= 0:
+                            # Fallback: Variations si aún no hay precio
+                            pid = str(prod.get("productId") or "").strip()
+                            if pid:
+                                v_name, v_price = vt_variations_price(s, pid, ean, sc_primary.strip(), headers_cm)
+                                if v_price:
+                                    price_num = v_price
+                                    found_name = v_name or found_name
+
+                        if price_num > 0:
+                            found_price = price_num
+
+                    if found_price:
+                        row["Precio"] = format_ar_price_no_thousands(found_price)
+                        row["Nombre"] = found_name or nombre
+
+                except Exception:
+                    pass  # dejamos "Revisar"
+
+                resultados.append(row)
+                done += 1
+                prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
+
+            df = pd.DataFrame(resultados, columns=["EAN", "Nombre", "Precio"])
+            st.success("✅ Relevamiento ChangoMás completado")
+            st.dataframe(df, use_container_width=True)
+
+            fecha = datetime.now().strftime("%Y-%m-%d")
+            st.download_button(
+                label="⬇ Descargar CSV (ChangoMás)",
+                data=df.to_csv(index=False).encode("utf-8"),
+                file_name=f"precios_changomas_{fecha}.csv",
                 mime="text/csv",
             )
 
@@ -578,6 +734,7 @@ with tab_coope:
                 file_name=f"precios_cooperativa_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
