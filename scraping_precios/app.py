@@ -220,11 +220,11 @@ with tab_dia:
             )
     
 # ============================================
-# 🟢 ChangoMás
+# 🟢 ChangoMás (por RefId)
 # ============================================
 with tab_chango:
-    st.subheader("ChangoMás · Relevamiento por EAN (VTEX)")
-    st.caption("Consulta por **EAN** usando VTEX Search (`alternateIds_Ean`) con `sc`. Early exit + timeouts cortos.")
+    st.subheader("ChangoMás · Relevamiento por RefId (VTEX)")
+    st.caption("Consulta por **RefId** usando VTEX Search (`alternateIds_RefId`). Early exit + timeouts cortos. Sin SC alternativos.")
 
     # Parámetros
     DEFAULT_SEGMENT = (
@@ -236,39 +236,24 @@ with tab_chango:
 
     # Constantes
     BASE_CM = "https://www.masonline.com.ar"
-    # 🔧 Timeouts (connect, read) más cortos
-    TIMEOUTS = (3, 7)
+    TIMEOUTS = (3, 7)  # (connect, read)
 
-    def ean_matches_item(ean: str, item: dict) -> bool:
-        if str(item.get("ean", "")).strip() == str(ean):
-            return True
-        for ref in (item.get("referenceId") or []):
-            if str(ref.get("Value", "")).strip() == str(ean):
-                return True
-        return False
-
-    def first_listprice_or_price(item: dict):
-        """
-        EARLY EXIT:
-        - Devuelve inmediatamente el primer ListPrice > 0 que encuentre (corta el loop).
-        - Si no hay LP>0, recuerda el mejor Price>0 para fallback.
-        - Retorna float o 0.0 si nada sirve.
-        """
+    def first_listprice_or_price(item: dict) -> float:
         best_price = 0.0
         for seller in (item.get("sellers") or []):
             co = seller.get("commertialOffer") or {}
             lp = float(co.get("ListPrice") or 0)
             if lp > 0:
-                return lp  # 🎯 early exit: ya tenemos ListPrice válido
+                return lp  # 🎯 early exit
             p = float(co.get("Price") or 0)
             if p > best_price:
                 best_price = p
-        return best_price  # puede ser 0.0
+        return best_price
 
-    def vt_search_by_ean(session: requests.Session, ean: str, sc: str, headers: dict):
-        """Search por EAN y sc. Retorna (product_json, items_list) o (None, None)."""
-        url = f"{BASE_CM}/api/catalog_system/pub/products/search?fq=alternateIds_Ean:{ean}&sc={sc}"
-        r = session.get(url, headers=headers, timeout=TIMEOUTS)
+    def vt_search_by_refid(session: requests.Session, refid: str, sc: str, headers: dict):
+        url = f"{BASE_CM}/api/catalog_system/pub/products/search"
+        params = {"fq": f"alternateIds_RefId:{refid}", "sc": sc}
+        r = session.get(url, headers=headers, params=params, timeout=TIMEOUTS)
         if show_debug_cm:
             st.text(f"SEARCH {sc}: {r.url} | {r.status_code} | {r.headers.get('content-type')}")
         r.raise_for_status()
@@ -279,30 +264,28 @@ with tab_chango:
         items = prod.get("items", []) or []
         return prod, items
 
-    def vt_variations_price(session: requests.Session, product_id: str, ean: str, sc: str, headers: dict):
-        """
-        Fallback: /pub/products/variations/{productId}?sc=...
-        Busca el SKU cuyo EAN matchee. Retorna (name, price_float|None).
-        """
-        url = f"{BASE_CM}/api/catalog_system/pub/products/variations/{product_id}?sc={sc}"
-        r = session.get(url, headers=headers, timeout=TIMEOUTS)
+    def vt_variations_price(session: requests.Session, product_id: str, refid: str, sc: str, headers: dict):
+        url = f"{BASE_CM}/api/catalog_system/pub/products/variations/{product_id}"
+        params = {"sc": sc}
+        r = session.get(url, headers=headers, params=params, timeout=TIMEOUTS)
         if show_debug_cm:
             st.text(f"VARIATIONS {sc}: {r.url} | {r.status_code}")
         r.raise_for_status()
         data = r.json()
         name = data.get("name")
         for sku in (data.get("skus") or []):
-            if str(sku.get("ean", "")).strip() == str(ean):
+            refids = [str(x.get("Value")) for x in (sku.get("referenceId") or []) if isinstance(x, dict)]
+            if str(refid) in refids or not refids:
                 lp = float(sku.get("listPrice") or 0)
                 if lp > 0:
-                    return name, lp  # 🎯 early exit si hay LP>0
+                    return name, lp
                 bp = float(sku.get("bestPrice") or 0)
                 return name, (bp if bp > 0 else None)
         return name, None
 
-    st.markdown(f"**Productos cargados:** {len(productos)}")
+    st.markdown(f"**Productos cargados:** {len(productos)} (se espera `cod_maso` en cada ítem)")
 
-    if st.button("🟢 Ejecutar relevamiento (ChangoMás)"):
+    if st.button("🟢 Ejecutar relevamiento (ChangoMás por RefId)"):
         with st.spinner("⏳ Relevando ChangoMás..."):
             s = requests.Session()
             headers_cm = {
@@ -317,34 +300,40 @@ with tab_chango:
             done = 0
 
             for nombre, datos in productos.items():
-                ean = str(datos.get("ean", "")).strip()
-                if not ean:
+                refid = str(datos.get("cod_maso", "")).strip()  # ⚠️ clave esperada
+                ean   = str(datos.get("ean", "")).strip()
+                if not refid:
+                    resultados.append({"EAN": ean, "RefId": "", "Nombre": nombre, "Precio": "Revisar"})
+                    done += 1
+                    prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
                     continue
 
-                row = {"EAN": ean, "Nombre": nombre, "Precio": "Revisar"}
+                row = {"EAN": ean, "RefId": refid, "Nombre": nombre, "Precio": "Revisar"}
                 try:
                     found_price = None
                     found_name = None
 
-                    prod, items = vt_search_by_ean(s, ean, sc_primary.strip(), headers_cm)
+                    prod, items = vt_search_by_refid(s, refid, sc_primary.strip(), headers_cm)
                     if prod and items:
-                        # Preferimos item que matchee EAN; si no, tomamos el primero que dé precio > 0.
-                        matching = [it for it in items if ean_matches_item(ean, it)]
-                        candidates = matching if matching else items
+                        # Item cuyo RefId coincida; si no, el primero
+                        item_sel = None
+                        for it in items:
+                            for rfi in (it.get("referenceId") or []):
+                                if str(rfi.get("Value", "")).strip() == refid:
+                                    item_sel = it
+                                    break
+                            if item_sel:
+                                break
+                        if not item_sel and items:
+                            item_sel = items[0]
 
-                        price_num = 0.0
-                        for it in candidates:
-                            price_num = first_listprice_or_price(it)
-                            if price_num > 0:
-                                break  # 🎯 early exit items
-
+                        price_num = first_listprice_or_price(item_sel) if item_sel else 0.0
                         found_name = prod.get("productName") or nombre
 
                         if price_num <= 0:
-                            # Fallback: Variations si aún no hay precio
                             pid = str(prod.get("productId") or "").strip()
                             if pid:
-                                v_name, v_price = vt_variations_price(s, pid, ean, sc_primary.strip(), headers_cm)
+                                v_name, v_price = vt_variations_price(s, pid, refid, sc_primary.strip(), headers_cm)
                                 if v_price:
                                     price_num = v_price
                                     found_name = v_name or found_name
@@ -352,9 +341,14 @@ with tab_chango:
                         if price_num > 0:
                             found_price = price_num
 
-                    if found_price:
-                        row["Precio"] = format_ar_price_no_thousands(found_price)
-                        row["Nombre"] = found_name or nombre
+                    if found_price is not None:
+                        # 👇 Nuevo: si el precio supera 1.000.000, marcar "Revisar"
+                        if float(found_price) > 1_000_000:
+                            row["Precio"] = "Revisar"
+                            row["Nombre"] = found_name or nombre
+                        else:
+                            row["Precio"] = format_ar_price_no_thousands(found_price)
+                            row["Nombre"] = found_name or nombre
 
                 except Exception:
                     pass  # dejamos "Revisar"
@@ -363,7 +357,7 @@ with tab_chango:
                 done += 1
                 prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
 
-            df = pd.DataFrame(resultados, columns=["EAN", "Nombre", "Precio"])
+            df = pd.DataFrame(resultados, columns=["EAN", "RefId", "Nombre", "Precio"])
             st.success("✅ Relevamiento ChangoMás completado")
             st.dataframe(df, use_container_width=True)
 
@@ -817,6 +811,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
