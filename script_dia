@@ -1,0 +1,65 @@
+# dia_ean_to_cod.py
+import requests
+import csv
+from datetime import datetime
+
+# Carga tus productos (diccionario: {"Nombre": {"ean": "...", ...}, ...})
+from ean_mercado import productos_mercado
+
+BASE = "https://diaonline.supermercadosdia.com.ar"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) PythonRequests/2.x",
+    "Accept": "application/json, text/plain, */*",
+}
+TIMEOUT = (3, 8)  # (connect, read)
+
+def fetch_cod_dia_by_ean(ean: str) -> str | None:
+    """
+    Busca en VTEX por EAN y devuelve el itemId (SKU) del primer item que matchee.
+    Ese itemId es el 'cod_dia' que luego sirve en GraphQL/checkout.
+    """
+    if not ean:
+        return None
+    url = f"{BASE}/api/catalog_system/pub/products/search"
+    params = {"fq": f"alternateIds_Ean:{ean}"}
+    try:
+        r = requests.get(url, headers=HEADERS, params=params, timeout=TIMEOUT)
+        r.raise_for_status()
+        data = r.json()
+        if not isinstance(data, list) or not data:
+            return None
+        prod = data[0]
+        for item in (prod.get("items") or []):
+            # match directo por EAN (item.ean o referenceId.Value)
+            iean = str(item.get("ean") or "").strip()
+            if iean == str(ean):
+                return str(item.get("itemId") or "").strip() or None
+            for ref in (item.get("referenceId") or []):
+                if str(ref.get("Value") or "").strip() == str(ean):
+                    return str(item.get("itemId") or "").strip() or None
+        # si no encontró match exacto, devolver el primer itemId disponible
+        items = prod.get("items") or []
+        if items:
+            return str(items[0].get("itemId") or "").strip() or None
+        return None
+    except Exception:
+        return None
+
+def main():
+    rows = []
+    for nombre, meta in productos_mercado.items():
+        ean = str((meta or {}).get("ean", "")).strip()
+        cod = fetch_cod_dia_by_ean(ean) if ean else None
+        print(f"{nombre} | EAN {ean} -> cod_dia: {cod or 'N/A'}")
+        rows.append({"nombre": nombre, "ean": ean, "cod_dia": cod or ""})
+
+    # Guarda CSV
+    fname = f"cod_dia_desde_ean_{datetime.now().strftime('%Y-%m-%d')}.csv"
+    with open(fname, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["nombre", "ean", "cod_dia"])
+        w.writeheader()
+        w.writerows(rows)
+    print(f"\nCSV guardado: {fname}")
+
+if __name__ == "__main__":
+    main()
