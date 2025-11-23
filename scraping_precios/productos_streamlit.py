@@ -13,6 +13,7 @@ productos = {
     "CLIGHT PERA 2022 16X20X7G":{"ean": "7622201703202", "cod_dia": "", "cod_maso": "205713652", "cod_coope": "", "cod_lib": "497208"},
     "CLIGHT MANDARINA 2022 16X20X8G":{"ean": "7622201704148", "cod_dia": "274276", "cod_maso": "214180657", "cod_coope": "284862", "cod_lib": "497260"},
     "CLIGHT LIMONADA ARANDANOS 16X20X8G":{"ean": "7622202236846", "cod_dia": "305575", "cod_maso": "103880452", "cod_coope": "", "cod_lib": "534034"},
+    "CLIGHT POMELADA HIBISCUS 16X20X8G":{"ean": "7622202359934", "cod_dia": "309744", "cod_maso": "", "cod_coope": "", "cod_lib": ""},
     "TANG FRUTILLA 12X20X15G":{"ean": "7622201746490", "cod_dia": "181248", "cod_maso": "214180673", "cod_coope": "", "cod_lib": "497170"},
     "TANG NARANJA 12X20X15G":{"ean": "7622201705961", "cod_dia": "274179", "cod_maso": "214180674", "cod_coope": "294290", "cod_lib": "497171"},
     "TANG MANZANA 12X20X15G":{"ean": "7622201705992", "cod_dia": "274181", "cod_maso": "214180676", "cod_coope": "284869", "cod_lib": "497172"},
@@ -29,6 +30,7 @@ productos = {
     "TANG UVA 12X20X15G":{"ean": "7622201746117", "cod_dia": "274214", "cod_maso": "214180648", "cod_coope": "", "cod_lib": "497182"},
     "TANG ANANA 12X20X15G":{"ean": "7622201745967", "cod_dia": "274213", "cod_maso": "214180649", "cod_coope": "294302", "cod_lib": "497183"},
     "TANG MANDARINA 12X20X15G":{"ean": "7622201733865", "cod_dia": "305576", "cod_maso": "103910385", "cod_coope": "315170", "cod_lib": "534033"},
+    "TANG GALACTICO 12X20X15G":{"ean": "7622202311482", "cod_dia": "309745", "cod_maso": "", "cod_coope": "", "cod_lib": ""},
     "VERAO NARANJA 2022 16X20X7G":{"ean": "7622201717414", "cod_dia": "203847", "cod_maso": "214180659", "cod_coope": "", "cod_lib": "497142"},
     "VERAO MANZANA 2022 16X20X7G":{"ean": "7622201717445", "cod_dia": "203850", "cod_maso": "214180660", "cod_coope": "", "cod_lib": "497274"},
     "VERAO NARANJA DURAZNO 2022 16X20X7G":{"ean": "7622201717476", "cod_dia": "203849", "cod_maso": "214180661", "cod_coope": "", "cod_lib": "497275"},
@@ -230,5 +232,6 @@ productos = {
     "RHODESIA TOONIX 62AGRX4PZX22GR":{"ean": "7622300742935", "cod_dia": "", "cod_maso": "2981331", "cod_coope": "186684", "cod_lib": ""},
     "TITA 2021 AG 69X5X19G":{"ean": "7622201803285", "cod_dia": "", "cod_maso": "205916315", "cod_coope": "186008", "cod_lib": ""},
 }
+
 
 
