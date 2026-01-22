@@ -1,0 +1,44 @@
+import requests
+import time
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "application/json"
+}
+
+def obtener_codigo_dia_desde_ean(ean):
+    url_api = (
+        "https://diaonline.supermercadosdia.com.ar/"
+        "api/catalog_system/pub/products/search"
+    )
+
+    params = {
+        "fq": f"alternateIds_Ean:{ean}"
+    }
+
+    try:
+        response = requests.get(url_api, headers=HEADERS, params=params, timeout=10)
+        response.raise_for_status()
+    except requests.RequestException:
+        return None
+
+    data = response.json()
+
+    if not data:
+        return None
+
+    return data[0].get("productId")
+
+
+# ====== EAN a procesar ======
+ean_list = [
+    "7622202311482",
+    "7790895012273",
+    "7790895000997"
+]
+
+# ====== Salida ======
+for ean in ean_list:
+    codigo = obtener_codigo_dia_desde_ean(ean)
+    print(codigo if codigo else "No Encontrado")
+    time.sleep(0.3)
