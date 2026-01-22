@@ -465,3 +465,470 @@ ean_list = [
 "7792360094562",
 
 ]
+
+###
+307054
+305568
+305566
+305692
+305693
+305694
+107876
+304730
+271962
+306621
+306622
+306623
+306624
+241458
+47932
+307485
+308624
+299715
+258021
+16206
+No Encontrado
+No Encontrado
+No Encontrado
+11817
+11823
+3907
+7047
+No Encontrado
+295047
+307558
+272206
+116422
+118119
+118120
+107880
+No Encontrado
+115735
+307569
+272214
+55029
+308671
+290941
+12760
+307570
+298666
+89062
+17929
+14927
+55062
+89061
+275784
+272210
+308625
+271278
+186469
+268359
+307589
+307603
+271959
+No Encontrado
+218421
+121118
+78685
+78686
+134643
+14920
+287902
+307567
+307568
+307560
+No Encontrado
+No Encontrado
+No Encontrado
+23669
+23675
+No Encontrado
+273222
+No Encontrado
+17930
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+77437
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+309744
+No Encontrado
+No Encontrado
+274274
+274279
+274216
+274275
+274273
+274276
+274217
+274277
+274215
+282436
+309745
+274211
+274213
+274212
+305576
+274181
+274183
+274184
+274182
+274180
+274179
+274214
+No Encontrado
+No Encontrado
+No Encontrado
+6273
+3909
+73265
+73264
+52289
+No Encontrado
+271630
+271629
+No Encontrado
+175320
+4522
+283177
+271628
+176893
+271632
+No Encontrado
+284655
+284571
+170177
+274330
+147685
+147689
+No Encontrado
+23428
+110564
+21721
+276726
+182539
+274632
+23430
+308300
+23431
+149060
+23423
+23426
+303490
+260584
+278032
+17932
+274902
+272322
+No Encontrado
+No Encontrado
+21637
+No Encontrado
+252365
+No Encontrado
+222262
+No Encontrado
+No Encontrado
+252368
+182540
+No Encontrado
+134986
+135191
+110388
+No Encontrado
+No Encontrado
+No Encontrado
+270871
+271838
+269579
+269580
+No Encontrado
+No Encontrado
+288529
+288531
+No Encontrado
+297927
+118528
+118532
+15023
+151228
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+3975
+131967
+309555
+162147
+3134
+No Encontrado
+137433
+No Encontrado
+309554
+No Encontrado
+273728
+40390
+4055
+58649
+122578
+3182
+124510
+107601
+24917
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+19294
+57302
+14916
+54455
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+272217
+216576
+216577
+No Encontrado
+No Encontrado
+305820
+253563
+8257
+No Encontrado
+No Encontrado
+298489
+185376
+307470
+124072
+No Encontrado
+No Encontrado
+No Encontrado
+299081
+289216
+308588
+289217
+289219
+309068
+305294
+77364
+305318
+305317
+38572
+No Encontrado
+No Encontrado
+14917
+No Encontrado
+301307
+No Encontrado
+No Encontrado
+285932
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+308804
+No Encontrado
+No Encontrado
+259547
+231936
+138144
+231934
+No Encontrado
+No Encontrado
+No Encontrado
+299813
+295831
+260952
+No Encontrado
+307363
+307364
+No Encontrado
+No Encontrado
+299852
+308717
+58648
+300113
+216575
+No Encontrado
+No Encontrado
+299850
+309754
+309753
+No Encontrado
+307559
+285041
+237234
+40337
+No Encontrado
+No Encontrado
+No Encontrado
+308591
+No Encontrado
+No Encontrado
+295252
+263978
+257613
+257614
+299814
+307624
+299717
+299716
+307623
+266047
+No Encontrado
+147642
+No Encontrado
+278494
+274176
+No Encontrado
+No Encontrado
+No Encontrado
+307579
+305302
+300027
+302559
+300029
+300030
+300028
+302341
+No Encontrado
+267295
+267294
+No Encontrado
+306946
+307590
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+308240
+289319
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+264665
+No Encontrado
+No Encontrado
+298651
+300588
+110600
+242671
+296755
+No Encontrado
+276293
+205793
+37004
+18373
+238921
+No Encontrado
+148828
+238922
+No Encontrado
+308808
+No Encontrado
+245105
+308242
+No Encontrado
+No Encontrado
+295454
+104335
+309797
+279379
+305303
+No Encontrado
+No Encontrado
+131004
+No Encontrado
+No Encontrado
+304507
+293747
+23499
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+117941
+No Encontrado
+162299
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+309179
+25187
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+283628
+No Encontrado
+224290
+No Encontrado
+No Encontrado
+No Encontrado
+No Encontrado
+295791
+295792
+295790
+289414
+No Encontrado
+No Encontrado
+309155
+309177
+308876
+308877
+289456
+289418
+289455
+No Encontrado
+289417
+No Encontrado
+No Encontrado
+No Encontrado
+270391
+No Encontrado
+307172
+No Encontrado
+###
