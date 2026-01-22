@@ -42,3 +42,4 @@ for ean in ean_list:
     codigo = obtener_codigo_dia_desde_ean(ean)
     print(codigo if codigo else "No Encontrado")
     time.sleep(0.3)
+
