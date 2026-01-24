@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 from datetime import datetime
+from urllib.parse import urljoin
 
 # ============================================
 # Config app
@@ -406,10 +407,12 @@ with tab_chango:
                 mime="text/csv",
             )
 
+# ============================================
+# 🏷️ Coto (con diagnóstico + preflight)
+# ============================================
+from urllib.parse import urljoin
+import requests
 
-# ============================================
-# 🏷️ Coto (con diagnóstico de EAN/items)
-# ============================================
 with tab_coto:
     st.subheader("Coto · Relevamiento por EAN")
     st.caption("Flujo: búsqueda (Ntk=product.eanPrincipal) → record.id → detalle (format=json) → sku.activePrice")
@@ -432,8 +435,6 @@ with tab_coto:
 
     suc = st.text_input("idSucursal (Coto)", value=DEFAULT_SUCURSAL, help="Se aplica a búsqueda y detalle.")
     show_debug = st.checkbox("Mostrar URLs de detalle (debug)", value=False)
-
-    # Checkbox sugerido: mostrar diagnóstico (items / EAN)
     show_diag = st.checkbox("Mostrar diagnóstico de items/EAN", value=True)
 
     def get_record_id_by_ean(session: requests.Session, ean: str, sucursal: str):
@@ -536,8 +537,7 @@ with tab_coto:
                         if return_debug:
                             debug_rows.append({"EAN": row["EAN"], "detail_url": det.get("detail_url")})
             except Exception:
-                # mantenemos el comportamiento original: no romper, dejar "Revisar"
-                pass
+                pass  # comportamiento original: no romper, dejar "Revisar"
 
             out.append(row)
             done += 1
@@ -549,19 +549,17 @@ with tab_coto:
         # Construimos items con metadatos + ean
         items = []
         for nombre, meta in productos.items():
-            # EAN siempre desde "ean"
-            ean = str((meta or {}).get("ean", "")).strip()
-
+            meta = meta or {}
             items.append({
                 "nombre_ref": nombre,
-                "ean": ean,
-                "empresa": (meta or {}).get("empresa", ""),
-                "categoría": (meta or {}).get("categoría", ""),
-                "subcategoría": (meta or {}).get("subcategoría", ""),
-                "marca": (meta or {}).get("marca", ""),
+                "ean": str(meta.get("ean", "")).strip(),
+                "empresa": meta.get("empresa", ""),
+                "categoría": meta.get("categoría", ""),
+                "subcategoría": meta.get("subcategoría", ""),
+                "marca": meta.get("marca", ""),
             })
 
-        # Diagnóstico sugerido (para detectar por qué termina "en segundos")
+        # Diagnóstico sugerido (items / EAN)
         if show_diag:
             total_items = len(items)
             with_ean = sum(1 for it in items if str(it.get("ean", "")).strip())
@@ -575,28 +573,58 @@ with tab_coto:
 
         if not items:
             st.warning("No hay items válidos en listado_coto.py")
-        else:
-            rows, dbg = scrape_coto_by_items(items, sucursal=(suc or DEFAULT_SUCURSAL), return_debug=show_debug)
+            st.stop()
 
-            df = pd.DataFrame(
-                rows,
-                columns=["Empresa", "Categoría", "Subcategoría", "Marca", "Nombre", "EAN", "Precio"]
-            )
+        # --------------------------------------------
+        # PREFLIGHT: 1 producto para validar requests / JSON / helpers
+        # --------------------------------------------
+        try:
+            test = next((it for it in items if str(it.get("ean", "")).strip()), None)
+            if not test:
+                st.warning("No hay EANs no vacíos para preflight.")
+                st.stop()
 
-            st.success("✅ Relevamiento Coto completado")
-            st.dataframe(df, use_container_width=True)
+            st.write("Preflight")
+            st.write("EAN:", test["ean"])
+            st.write("Sucursal:", (suc or DEFAULT_SUCURSAL))
 
-            if show_debug and dbg:
-                with st.expander("Debug: detalle de URLs llamadas"):
-                    st.dataframe(pd.DataFrame(dbg), use_container_width=True)
+            s = requests.Session()
+            s.headers.update(HEADERS_COTO)
 
-            fecha = datetime.now().strftime("%Y-%m-%d")
-            st.download_button(
-                "⬇ Descargar CSV (Coto)",
-                df.to_csv(index=False).encode("utf-8"),
-                file_name=f"precios_coto_{fecha}.csv",
-                mime="text/csv",
-            )
+            rid, nh = get_record_id_by_ean(s, test["ean"], (suc or DEFAULT_SUCURSAL))
+            st.write("record_id:", rid)
+            st.write("name_hint:", nh)
+
+            if not rid:
+                st.warning("Preflight: no se encontró record_id para este EAN (puede no existir en Coto o cambió el endpoint).")
+        except Exception as ex:
+            st.error(f"Preflight error: {type(ex).__name__} -> {ex}")
+            st.stop()
+
+        # Si el preflight pasó (sin excepción), ejecutamos el relevamiento completo
+        rows, dbg = scrape_coto_by_items(items, sucursal=(suc or DEFAULT_SUCURSAL), return_debug=show_debug)
+
+        df = pd.DataFrame(
+            rows,
+            columns=["Empresa", "Categoría", "Subcategoría", "Marca", "Nombre", "EAN", "Precio"]
+        )
+
+        st.success("✅ Relevamiento Coto completado")
+        st.dataframe(df, use_container_width=True)
+
+        if show_debug and dbg:
+            with st.expander("Debug: detalle de URLs llamadas"):
+                st.dataframe(pd.DataFrame(dbg), use_container_width=True)
+
+        fecha = datetime.now().strftime("%Y-%m-%d")
+        st.download_button(
+            "⬇ Descargar CSV (Coto)",
+            df.to_csv(index=False).encode("utf-8"),
+            file_name=f"precios_coto_{fecha}.csv",
+            mime="text/csv",
+        )
+
+
 
 # ============================================
 # 🟢 Jumbo
@@ -899,6 +927,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
