@@ -407,37 +407,7 @@ with tab_chango:
                 mime="text/csv",
             )
 
-
-
 # ============================================
-# 🟢 Jumbo
-# ============================================
-with tab_jumbo:
-    st.subheader("Jumbo · Relevamiento por EAN (VTEX)")
-    st.caption("Consulta por **EAN** y toma **Installments[].Value** del primer item/seller. Sin cookie.")
-
-    HEADERS_JUMBO = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json,text/plain,*/*",
-    }
-
-    if st.button("Ejecutar relevamiento (Jumbo)"):
-        with st.spinner("⏳ Relevando Jumbo..."):
-            resultados = []
-            for nombre, datos in productos.items():
-                ean = str(datos.get("ean") or "").strip()
-                try:
-                    if not ean:
-                        resultados.append({"EAN": "", "Nombre": nombre, "Precio": "Revisar"})
-                        continue
-
-                    # VTEX search por EAN
-                    url = f"https://www.jumbo.com.ar/api/catalog_system/pub/products/search?fq=alternateIds_Ean:{ean}"
-                    r = requests.get(url, headers=HEADERS_JUMBO, timeout=12)
-                    data = r.json()
-
-                    if not data:
-                # ============================================
 # 🧩 Utilidades comunes (necesarias para Coto)
 # ============================================
 from urllib.parse import urljoin
@@ -677,7 +647,37 @@ with tab_coto:
             file_name=f"precios_coto_{fecha}.csv",
             mime="text/csv",
         )
-        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+
+
+# ============================================
+# 🟢 Jumbo
+# ============================================
+with tab_jumbo:
+    st.subheader("Jumbo · Relevamiento por EAN (VTEX)")
+    st.caption("Consulta por **EAN** y toma **Installments[].Value** del primer item/seller. Sin cookie.")
+
+    HEADERS_JUMBO = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json,text/plain,*/*",
+    }
+
+    if st.button("Ejecutar relevamiento (Jumbo)"):
+        with st.spinner("⏳ Relevando Jumbo..."):
+            resultados = []
+            for nombre, datos in productos.items():
+                ean = str(datos.get("ean") or "").strip()
+                try:
+                    if not ean:
+                        resultados.append({"EAN": "", "Nombre": nombre, "Precio": "Revisar"})
+                        continue
+
+                    # VTEX search por EAN
+                    url = f"https://www.jumbo.com.ar/api/catalog_system/pub/products/search?fq=alternateIds_Ean:{ean}"
+                    r = requests.get(url, headers=HEADERS_JUMBO, timeout=12)
+                    data = r.json()
+
+                    if not data:
+                    resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
                         continue
 
                     prod = data[0]
@@ -950,6 +950,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
