@@ -1,4 +1,4 @@
-lista_carrefour = {
+productos = {
   "ARCOR JUGO POLVO REG FRUTILLA SOBRE 15G P/1L": {"empresa": "ARCOR", "categoría": "Beverages", "subcategoría": "Pbs", "marca": "ARCOR", "ean": "7790580143244",},
   "ARCOR POLVO ANANA REG SOBRE 15G P/1L": {"empresa": "ARCOR", "categoría": "Beverages", "subcategoría": "Pbs", "marca": "ARCOR", "ean": "7790580141516",},
   "ARCOR POLVO DURAZNO BAJO AZUCARES SOBRE 18GR P/1L": {"empresa": "ARCOR", "categoría": "Beverages", "subcategoría": "Pbs", "marca": "ARCOR", "ean": "7790580129927",},
