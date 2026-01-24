@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import requests
 from datetime import datetime
-from urllib.parse import urljoin
 
 # ============================================
 # Config app
@@ -12,9 +11,9 @@ st.title("📊 Relevamiento de Precios")
 st.caption("Esta herramienta tiene por objetivo relevar los precios de todo el portfolio de forma automática")
 
 # ============================================
-# Datos de entrada (diccionario compartido)
+# Datos de entrada (Carrefour)
 # ============================================
-from productos_streamlit import productos  # {"Nombre": {"ean": "...", "productId": "..."}}
+from listado_carrefour import productos  # {"Nombre": {"empresa": "...", "categoría": "...", ... , "ean": "..."}}
 
 # ============================================
 # Utilidades comunes
@@ -25,47 +24,20 @@ def format_ar_price_no_thousands(value):
         return None
     return f"{float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", "")
 
-def coerce_first(x):
-    return (x[0] if isinstance(x, list) and x else x)
-
-def find_key_recursive(obj, key):
-    if isinstance(obj, dict):
-        if key in obj:
-            return obj[key]
-        for v in obj.values():
-            r = find_key_recursive(v, key)
-            if r is not None:
-                return r
-    elif isinstance(obj, list):
-        for it in obj:
-            r = find_key_recursive(it, key)
-            if r is not None:
-                return r
-    return None
-
-def iter_records(node):
-    if isinstance(node, dict):
-        if any(k in node for k in ("record.id","product.repositoryId","product.displayName","product.eanPrincipal")):
-            yield node
-        for v in node.values():
-            yield from iter_records(v)
-    elif isinstance(node, list):
-        for it in node:
-            yield from iter_records(it)
-
 # ============================================
 # Pestañas
 # ============================================
-tab_carrefour, tab_dia, tab_chango, tab_coto, tab_jumbo, tab_vea, tab_coope, tab_hiper = st.tabs(["🛒 Carrefour", "🟥 Día", "🟢 ChangoMás", "🏷️ Coto", "🟢 Jumbo", "🟢 Vea", "🟡 Cooperativa", "🔴 Libertad"])
+tab_carrefour, tab_dia, tab_chango, tab_coto, tab_jumbo, tab_vea, tab_coope, tab_hiper = st.tabs(
+    ["🛒 Carrefour", "🟥 Día", "🟢 ChangoMás", "🏷️ Coto", "🟢 Jumbo", "🟢 Vea", "🟡 Cooperativa", "🔴 Libertad"]
+)
 
 # ============================================
 # 🛒 Carrefour (por EAN)
 # ============================================
 with tab_carrefour:
     st.subheader("Carrefour · Hiper Olivos")
-    st.write("Relevamiento automático de todos los SKUs, aplicando la sucursal **Hiper Olivos**. (Ahora busca por **EAN**)")
+    st.write("Relevamiento automático de todos los SKUs, aplicando la sucursal **Hiper Olivos**. (Busca por **EAN**)")
 
-    # --- Cookie / headers Carrefour (VTEX)
     COOKIE_SEGMENT = (
         "eyJjYW1wYWlnbnMiOm51bGwsImNoYW5uZWwiOiIxIiwicHJpY2VUYWJsZXMiOm51bGwsInJlZ2lvbklkIjpudWxsLCJ1dG1fY2FtcGFpZ24iOm51bGws"
         "InV0bV9zb3VyY2UiOm51bGwsInV0bWlfY2FtcGFpZ24iOm51bGwsImN1cnJlbmN5Q29kZSI6IkFSUyIsImN1cnJlbmN5U3ltYm9sIjoiJCIsImNvdW50"
@@ -80,26 +52,51 @@ with tab_carrefour:
     if st.button("🔍 Ejecutar relevamiento (Carrefour)"):
         with st.spinner("⏳ Relevando Carrefour..."):
             resultados = []
-            for nombre, datos in productos.items():
+
+            for nombre_base, datos in productos.items():
+                # Metadatos del listado (tu archivo listado_carrefour.py)
+                empresa = (datos.get("empresa") or "").strip()
+                categoria = (datos.get("categoría") or "").strip()
+                subcategoria = (datos.get("subcategoría") or "").strip()
+                marca = (datos.get("marca") or "").strip()
+
                 ean = str(datos.get("ean") or "").strip()
+
                 try:
                     if not ean:
-                        resultados.append({"EAN": "", "Nombre": nombre, "Precio": "Revisar"})
+                        resultados.append({
+                            "Empresa": empresa,
+                            "Categoría": categoria,
+                            "Subcategoría": subcategoria,
+                            "Marca": marca,
+                            "Nombre": nombre_base,
+                            "EAN": "",
+                            "ListPrice": "Revisar",
+                            "Price": "Revisar",
+                        })
                         continue
 
-                    # Buscar por EAN en VTEX
                     url = f"https://www.carrefour.com.ar/api/catalog_system/pub/products/search?fq=alternateIds_Ean:{ean}"
                     r = requests.get(url, headers=HEADERS_CARR, timeout=12)
                     data = r.json()
 
                     if not data:
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+                        resultados.append({
+                            "Empresa": empresa,
+                            "Categoría": categoria,
+                            "Subcategoría": subcategoria,
+                            "Marca": marca,
+                            "Nombre": nombre_base,
+                            "EAN": ean,
+                            "ListPrice": "Revisar",
+                            "Price": "Revisar",
+                        })
                         continue
 
                     prod = data[0]
                     items = prod.get("items") or []
 
-                    # Elegimos el item que matchee el EAN (ean o referenceId.Value). Si no, el primero.
+                    # Elegimos item que matchee EAN. Si no, el primero.
                     item_sel = None
                     for it in items:
                         if str(it.get("ean") or "").strip() == ean:
@@ -115,35 +112,75 @@ with tab_carrefour:
                         item_sel = items[0]
 
                     if not item_sel or not item_sel.get("sellers"):
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+                        resultados.append({
+                            "Empresa": empresa,
+                            "Categoría": categoria,
+                            "Subcategoría": subcategoria,
+                            "Marca": marca,
+                            "Nombre": nombre_base,
+                            "EAN": ean,
+                            "ListPrice": "Revisar",
+                            "Price": "Revisar",
+                        })
                         continue
 
                     offer = item_sel["sellers"][0].get("commertialOffer", {})
-                    price_list = float(offer.get("ListPrice") or 0)
-                    price = float(offer.get("Price") or 0)
-                    final_price = price_list if price_list > 0 else price
 
-                    if final_price and final_price > 0:
-                        precio_formateado = format_ar_price_no_thousands(final_price)
-                        nombre_prod = prod.get("productName") or nombre
-                        resultados.append({"EAN": ean, "Nombre": nombre_prod, "Precio": precio_formateado})
-                    else:
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+                    # Tomamos ambos precios
+                    list_price = offer.get("ListPrice")
+                    price = offer.get("Price")
+
+                    list_price_f = format_ar_price_no_thousands(list_price) if list_price else ""
+                    price_f = format_ar_price_no_thousands(price) if price else ""
+
+                    # Nombre: priorizamos el de la API; si no, el de tu listado
+                    nombre_api = (prod.get("productName") or "").strip()
+                    nombre_final = nombre_api if nombre_api else nombre_base
+
+                    # Si no hay ninguno de los dos precios, Revisar
+                    if not list_price_f and not price_f:
+                        list_price_f = "Revisar"
+                        price_f = "Revisar"
+
+                    resultados.append({
+                        "Empresa": empresa,
+                        "Categoría": categoria,
+                        "Subcategoría": subcategoria,
+                        "Marca": marca,
+                        "Nombre": nombre_final,
+                        "EAN": ean,
+                        "ListPrice": list_price_f,
+                        "Price": price_f,
+                    })
 
                 except Exception:
-                    resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+                    resultados.append({
+                        "Empresa": empresa,
+                        "Categoría": categoria,
+                        "Subcategoría": subcategoria,
+                        "Marca": marca,
+                        "Nombre": nombre_base,
+                        "EAN": ean,
+                        "ListPrice": "Revisar",
+                        "Price": "Revisar",
+                    })
 
-            df = pd.DataFrame(resultados, columns=["EAN", "Nombre", "Precio"])
+            df = pd.DataFrame(
+                resultados,
+                columns=["Empresa", "Categoría", "Subcategoría", "Marca", "Nombre", "EAN", "ListPrice", "Price"]
+            )
+
             st.success("✅ Relevamiento Carrefour completado")
             st.dataframe(df, use_container_width=True)
 
             fecha = datetime.now().strftime("%Y-%m-%d")
             st.download_button(
                 label="⬇ Descargar CSV (Carrefour)",
-                data=df.to_csv(index=False).encode('utf-8'),
+                data=df.to_csv(index=False).encode("utf-8"),
                 file_name=f"precios_carrefour_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 # ============================================
 # 🟥 Día
@@ -811,6 +848,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
