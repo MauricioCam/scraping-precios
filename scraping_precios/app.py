@@ -408,7 +408,7 @@ with tab_chango:
 
 
 # ============================================
-# 🏷️ Coto
+# 🏷️ Coto (con diagnóstico de EAN/items)
 # ============================================
 with tab_coto:
     st.subheader("Coto · Relevamiento por EAN")
@@ -432,6 +432,9 @@ with tab_coto:
 
     suc = st.text_input("idSucursal (Coto)", value=DEFAULT_SUCURSAL, help="Se aplica a búsqueda y detalle.")
     show_debug = st.checkbox("Mostrar URLs de detalle (debug)", value=False)
+
+    # Checkbox sugerido: mostrar diagnóstico (items / EAN)
+    show_diag = st.checkbox("Mostrar diagnóstico de items/EAN", value=True)
 
     def get_record_id_by_ean(session: requests.Session, ean: str, sucursal: str):
         params = {"Dy": "1", "Ntt": ean, "Ntk": "product.eanPrincipal", "idSucursal": sucursal, "format": "json"}
@@ -502,7 +505,6 @@ with tab_coto:
         prog = st.progress(0, text="Procesando…")
         done = 0
 
-        # items: lista de dicts con metadatos + ean + nombre_ref
         for it in items:
             nombre_ref = str(it.get("nombre_ref", "")).strip()
             ean = str(it.get("ean", "")).strip()
@@ -512,7 +514,6 @@ with tab_coto:
             subcategoria = str(it.get("subcategoría", "") or "").strip()
             marca = str(it.get("marca", "") or "").strip()
 
-            # Default pedido
             row = {
                 "Empresa": empresa,
                 "Categoría": categoria,
@@ -528,18 +529,14 @@ with tab_coto:
                     record_id, name_hint = get_record_id_by_ean(s, ean, sucursal)
                     if record_id:
                         det = fetch_detail_by_record_id(s, record_id, sucursal)
-
                         row["EAN"] = det.get("ean") or ean
-                        # Prioridad: nombre API -> hint búsqueda -> nombre del listado
                         row["Nombre"] = det.get("name") or name_hint or nombre_ref
-
                         if det.get("price") is not None:
                             row["Precio"] = det.get("price")
-
                         if return_debug:
                             debug_rows.append({"EAN": row["EAN"], "detail_url": det.get("detail_url")})
-                # si no hay ean o no hay record_id, dejamos "Revisar"
             except Exception:
+                # mantenemos el comportamiento original: no romper, dejar "Revisar"
                 pass
 
             out.append(row)
@@ -549,30 +546,32 @@ with tab_coto:
         return (out, debug_rows) if return_debug else (out, None)
 
     if st.button("⚡ Ejecutar relevamiento (Coto)"):
-        # Construimos una lista de items con metadatos + ean
+        # Construimos items con metadatos + ean
         items = []
         for nombre, meta in productos.items():
-            ean = str(meta.get("ean", "")).strip()
-            if not ean:
-                # igual lo incluimos para que salga en el output con Revisar
-                items.append({
-                    "nombre_ref": nombre,
-                    "ean": "",
-                    "empresa": meta.get("empresa", ""),
-                    "categoría": meta.get("categoría", ""),
-                    "subcategoría": meta.get("subcategoría", ""),
-                    "marca": meta.get("marca", ""),
-                })
-                continue
+            # EAN siempre desde "ean"
+            ean = str((meta or {}).get("ean", "")).strip()
 
             items.append({
                 "nombre_ref": nombre,
                 "ean": ean,
-                "empresa": meta.get("empresa", ""),
-                "categoría": meta.get("categoría", ""),
-                "subcategoría": meta.get("subcategoría", ""),
-                "marca": meta.get("marca", ""),
+                "empresa": (meta or {}).get("empresa", ""),
+                "categoría": (meta or {}).get("categoría", ""),
+                "subcategoría": (meta or {}).get("subcategoría", ""),
+                "marca": (meta or {}).get("marca", ""),
             })
+
+        # Diagnóstico sugerido (para detectar por qué termina "en segundos")
+        if show_diag:
+            total_items = len(items)
+            with_ean = sum(1 for it in items if str(it.get("ean", "")).strip())
+            st.write("Diagnóstico")
+            st.write("Total items:", total_items)
+            st.write("Items con EAN no vacío:", with_ean)
+            st.write("Ejemplo item:", items[0] if items else None)
+
+            if total_items > 0 and with_ean == 0:
+                st.warning("Todos los EAN están vacíos. Revisá que listado_coto.py use la clave exacta 'ean'.")
 
         if not items:
             st.warning("No hay items válidos en listado_coto.py")
@@ -900,6 +899,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
