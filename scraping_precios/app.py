@@ -414,6 +414,11 @@ with tab_coto:
     st.subheader("Coto · Relevamiento por EAN")
     st.caption("Flujo: búsqueda (Ntk=product.eanPrincipal) → record.id → detalle (format=json) → sku.activePrice")
 
+    # --------------------------------------------
+    # Datos de entrada (Coto)
+    # --------------------------------------------
+    from listado_coto import productos  # {"Nombre": {"empresa": "...", "categoría": "...", "subcategoría": "...", "marca": "...", "ean": "..."}}
+
     # Constantes / headers Coto
     BASE = "https://www.cotodigital.com.ar"
     SEARCH_CATEGORIA = "/sitios/cdigi/categoria"
@@ -437,9 +442,11 @@ with tab_coto:
         for rec in iter_records(data):
             e = coerce_first(find_key_recursive(rec, "product.eanPrincipal"))
             if str(e) == str(ean):
-                rid  = coerce_first(find_key_recursive(rec, "record.id"))
-                name = coerce_first(find_key_recursive(rec, "product.displayName")) \
-                       or coerce_first(find_key_recursive(rec, "record.title"))
+                rid = coerce_first(find_key_recursive(rec, "record.id"))
+                name = (
+                    coerce_first(find_key_recursive(rec, "product.displayName"))
+                    or coerce_first(find_key_recursive(rec, "record.title"))
+                )
                 return rid, (str(name) if name else None)
         return None, None
 
@@ -466,13 +473,13 @@ with tab_coto:
         r.raise_for_status()
         data = r.json()
 
-        ean   = coerce_first(find_key_recursive(data, "product.eanPrincipal"))
-        name  = coerce_first(find_key_recursive(data, "product.displayName"))
-        raw   = coerce_first(find_key_recursive(data, "sku.activePrice"))
+        ean = coerce_first(find_key_recursive(data, "product.eanPrincipal"))
+        name = coerce_first(find_key_recursive(data, "product.displayName"))
+        raw = coerce_first(find_key_recursive(data, "sku.activePrice"))
 
         price = cast_price(raw)
         if price is None:
-            for alt in ("activePrice","sku.price","sku.listPrice","price","listPrice"):
+            for alt in ("activePrice", "sku.price", "sku.listPrice", "price", "listPrice"):
                 raw_alt = coerce_first(find_key_recursive(data, alt))
                 price = cast_price(raw_alt)
                 if price is not None:
@@ -495,24 +502,45 @@ with tab_coto:
         prog = st.progress(0, text="Procesando…")
         done = 0
 
-        for nombre_ref, ean in items:
-            ean = str(ean).strip()
-            nombre_ref = str(nombre_ref).strip()
-            row = {"EAN": ean, "Nombre del Producto": nombre_ref, "Precio": "Revisar"}  # default pedido
+        # items: lista de dicts con metadatos + ean + nombre_ref
+        for it in items:
+            nombre_ref = str(it.get("nombre_ref", "")).strip()
+            ean = str(it.get("ean", "")).strip()
+
+            empresa = str(it.get("empresa", "") or "").strip()
+            categoria = str(it.get("categoría", "") or "").strip()
+            subcategoria = str(it.get("subcategoría", "") or "").strip()
+            marca = str(it.get("marca", "") or "").strip()
+
+            # Default pedido
+            row = {
+                "Empresa": empresa,
+                "Categoría": categoria,
+                "Subcategoría": subcategoria,
+                "Marca": marca,
+                "Nombre": nombre_ref,
+                "EAN": ean,
+                "Precio": "Revisar",
+            }
 
             try:
-                record_id, name_hint = get_record_id_by_ean(s, ean, sucursal)
-                if record_id:
-                    det = fetch_detail_by_record_id(s, record_id, sucursal)
-                    row["EAN"] = det.get("ean") or ean
-                    row["Nombre del Producto"] = det.get("name") or name_hint or nombre_ref
-                    if det.get("price") is not None:
-                        row["Precio"] = det.get("price")
-                    if return_debug:
-                        debug_rows.append({"EAN": row["EAN"], "detail_url": det.get("detail_url")})
-                # si no hay record_id, dejamos "Revisar" y nombre_ref tal cual
+                if ean:
+                    record_id, name_hint = get_record_id_by_ean(s, ean, sucursal)
+                    if record_id:
+                        det = fetch_detail_by_record_id(s, record_id, sucursal)
+
+                        row["EAN"] = det.get("ean") or ean
+                        # Prioridad: nombre API -> hint búsqueda -> nombre del listado
+                        row["Nombre"] = det.get("name") or name_hint or nombre_ref
+
+                        if det.get("price") is not None:
+                            row["Precio"] = det.get("price")
+
+                        if return_debug:
+                            debug_rows.append({"EAN": row["EAN"], "detail_url": det.get("detail_url")})
+                # si no hay ean o no hay record_id, dejamos "Revisar"
             except Exception:
-                pass  # dejamos "Revisar"
+                pass
 
             out.append(row)
             done += 1
@@ -521,18 +549,41 @@ with tab_coto:
         return (out, debug_rows) if return_debug else (out, None)
 
     if st.button("⚡ Ejecutar relevamiento (Coto)"):
-        # Construimos [(nombre_ref, ean), ...]
+        # Construimos una lista de items con metadatos + ean
         items = []
         for nombre, meta in productos.items():
             ean = str(meta.get("ean", "")).strip()
-            if ean:
-                items.append((nombre, ean))
+            if not ean:
+                # igual lo incluimos para que salga en el output con Revisar
+                items.append({
+                    "nombre_ref": nombre,
+                    "ean": "",
+                    "empresa": meta.get("empresa", ""),
+                    "categoría": meta.get("categoría", ""),
+                    "subcategoría": meta.get("subcategoría", ""),
+                    "marca": meta.get("marca", ""),
+                })
+                continue
+
+            items.append({
+                "nombre_ref": nombre,
+                "ean": ean,
+                "empresa": meta.get("empresa", ""),
+                "categoría": meta.get("categoría", ""),
+                "subcategoría": meta.get("subcategoría", ""),
+                "marca": meta.get("marca", ""),
+            })
 
         if not items:
-            st.warning("No hay EANs válidos en productos_streamlit.py")
+            st.warning("No hay items válidos en listado_coto.py")
         else:
             rows, dbg = scrape_coto_by_items(items, sucursal=(suc or DEFAULT_SUCURSAL), return_debug=show_debug)
-            df = pd.DataFrame(rows, columns=["EAN", "Nombre del Producto", "Precio"])
+
+            df = pd.DataFrame(
+                rows,
+                columns=["Empresa", "Categoría", "Subcategoría", "Marca", "Nombre", "EAN", "Precio"]
+            )
+
             st.success("✅ Relevamiento Coto completado")
             st.dataframe(df, use_container_width=True)
 
@@ -547,6 +598,7 @@ with tab_coto:
                 file_name=f"precios_coto_{fecha}.csv",
                 mime="text/csv",
             )
+
 # ============================================
 # 🟢 Jumbo
 # ============================================
@@ -848,6 +900,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
