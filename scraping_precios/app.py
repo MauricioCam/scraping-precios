@@ -407,22 +407,80 @@ with tab_chango:
                 mime="text/csv",
             )
 
+
+
 # ============================================
-# 🏷️ Coto (con diagnóstico + preflight)
+# 🟢 Jumbo
+# ============================================
+with tab_jumbo:
+    st.subheader("Jumbo · Relevamiento por EAN (VTEX)")
+    st.caption("Consulta por **EAN** y toma **Installments[].Value** del primer item/seller. Sin cookie.")
+
+    HEADERS_JUMBO = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json,text/plain,*/*",
+    }
+
+    if st.button("Ejecutar relevamiento (Jumbo)"):
+        with st.spinner("⏳ Relevando Jumbo..."):
+            resultados = []
+            for nombre, datos in productos.items():
+                ean = str(datos.get("ean") or "").strip()
+                try:
+                    if not ean:
+                        resultados.append({"EAN": "", "Nombre": nombre, "Precio": "Revisar"})
+                        continue
+
+                    # VTEX search por EAN
+                    url = f"https://www.jumbo.com.ar/api/catalog_system/pub/products/search?fq=alternateIds_Ean:{ean}"
+                    r = requests.get(url, headers=HEADERS_JUMBO, timeout=12)
+                    data = r.json()
+
+                    if not data:
+                # ============================================
+# 🧩 Utilidades comunes (necesarias para Coto)
 # ============================================
 from urllib.parse import urljoin
 import requests
 
+def coerce_first(x):
+    return (x[0] if isinstance(x, list) and x else x)
+
+def find_key_recursive(obj, key):
+    if isinstance(obj, dict):
+        if key in obj:
+            return obj[key]
+        for v in obj.values():
+            r = find_key_recursive(v, key)
+            if r is not None:
+                return r
+    elif isinstance(obj, list):
+        for it in obj:
+            r = find_key_recursive(it, key)
+            if r is not None:
+                return r
+    return None
+
+def iter_records(node):
+    if isinstance(node, dict):
+        if any(k in node for k in ("record.id", "product.repositoryId", "product.displayName", "product.eanPrincipal")):
+            yield node
+        for v in node.values():
+            yield from iter_records(v)
+    elif isinstance(node, list):
+        for it in node:
+            yield from iter_records(it)
+
+# ============================================
+# 🏷️ Coto (con diagnóstico + preflight)
+# ============================================
 with tab_coto:
     st.subheader("Coto · Relevamiento por EAN")
     st.caption("Flujo: búsqueda (Ntk=product.eanPrincipal) → record.id → detalle (format=json) → sku.activePrice")
 
-    # --------------------------------------------
     # Datos de entrada (Coto)
-    # --------------------------------------------
     from listado_coto import productos  # {"Nombre": {"empresa": "...", "categoría": "...", "subcategoría": "...", "marca": "...", "ean": "..."}}
 
-    # Constantes / headers Coto
     BASE = "https://www.cotodigital.com.ar"
     SEARCH_CATEGORIA = "/sitios/cdigi/categoria"
     DEFAULT_SUCURSAL = "200"
@@ -472,7 +530,7 @@ with tab_coto:
         detail_url = f"{product_url}?Dy=1&idSucursal={sucursal}&format=json"
 
         headers = dict(session.headers)
-        headers["Referer"] = product_url  # ayuda en algunos entornos
+        headers["Referer"] = product_url
         r = session.get(detail_url, headers=headers, timeout=20)
         r.raise_for_status()
         data = r.json()
@@ -537,7 +595,7 @@ with tab_coto:
                         if return_debug:
                             debug_rows.append({"EAN": row["EAN"], "detail_url": det.get("detail_url")})
             except Exception:
-                pass  # comportamiento original: no romper, dejar "Revisar"
+                pass
 
             out.append(row)
             done += 1
@@ -559,7 +617,6 @@ with tab_coto:
                 "marca": meta.get("marca", ""),
             })
 
-        # Diagnóstico sugerido (items / EAN)
         if show_diag:
             total_items = len(items)
             with_ean = sum(1 for it in items if str(it.get("ean", "")).strip())
@@ -568,16 +625,13 @@ with tab_coto:
             st.write("Items con EAN no vacío:", with_ean)
             st.write("Ejemplo item:", items[0] if items else None)
 
-            if total_items > 0 and with_ean == 0:
-                st.warning("Todos los EAN están vacíos. Revisá que listado_coto.py use la clave exacta 'ean'.")
-
         if not items:
             st.warning("No hay items válidos en listado_coto.py")
             st.stop()
 
-        # --------------------------------------------
-        # PREFLIGHT: 1 producto para validar requests / JSON / helpers
-        # --------------------------------------------
+        # -------------------------
+        # PREFLIGHT (1 EAN)
+        # -------------------------
         try:
             test = next((it for it in items if str(it.get("ean", "")).strip()), None)
             if not test:
@@ -588,10 +642,10 @@ with tab_coto:
             st.write("EAN:", test["ean"])
             st.write("Sucursal:", (suc or DEFAULT_SUCURSAL))
 
-            s = requests.Session()
-            s.headers.update(HEADERS_COTO)
+            sess = requests.Session()
+            sess.headers.update(HEADERS_COTO)
 
-            rid, nh = get_record_id_by_ean(s, test["ean"], (suc or DEFAULT_SUCURSAL))
+            rid, nh = get_record_id_by_ean(sess, test["ean"], (suc or DEFAULT_SUCURSAL))
             st.write("record_id:", rid)
             st.write("name_hint:", nh)
 
@@ -601,7 +655,7 @@ with tab_coto:
             st.error(f"Preflight error: {type(ex).__name__} -> {ex}")
             st.stop()
 
-        # Si el preflight pasó (sin excepción), ejecutamos el relevamiento completo
+        # Relevamiento completo
         rows, dbg = scrape_coto_by_items(items, sucursal=(suc or DEFAULT_SUCURSAL), return_debug=show_debug)
 
         df = pd.DataFrame(
@@ -623,38 +677,7 @@ with tab_coto:
             file_name=f"precios_coto_{fecha}.csv",
             mime="text/csv",
         )
-
-
-
-# ============================================
-# 🟢 Jumbo
-# ============================================
-with tab_jumbo:
-    st.subheader("Jumbo · Relevamiento por EAN (VTEX)")
-    st.caption("Consulta por **EAN** y toma **Installments[].Value** del primer item/seller. Sin cookie.")
-
-    HEADERS_JUMBO = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json,text/plain,*/*",
-    }
-
-    if st.button("Ejecutar relevamiento (Jumbo)"):
-        with st.spinner("⏳ Relevando Jumbo..."):
-            resultados = []
-            for nombre, datos in productos.items():
-                ean = str(datos.get("ean") or "").strip()
-                try:
-                    if not ean:
-                        resultados.append({"EAN": "", "Nombre": nombre, "Precio": "Revisar"})
-                        continue
-
-                    # VTEX search por EAN
-                    url = f"https://www.jumbo.com.ar/api/catalog_system/pub/products/search?fq=alternateIds_Ean:{ean}"
-                    r = requests.get(url, headers=HEADERS_JUMBO, timeout=12)
-                    data = r.json()
-
-                    if not data:
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
                         continue
 
                     prod = data[0]
@@ -927,6 +950,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
