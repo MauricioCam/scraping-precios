@@ -442,11 +442,122 @@ def iter_records(node):
             yield from iter_records(it)
 
 # ============================================
-# 🏷️ Coto (con diagnóstico + preflight)
+# 🏷️ Coto (ListPrice + Price; si no hay promo, Price = ListPrice)
+# ============================================
+from urllib.parse import urljoin
+import requests
+import json
+import re
+
+# --------------------------------------------
+# Utilidades comunes (necesarias para Coto)
+# --------------------------------------------
+def coerce_first(x):
+    return (x[0] if isinstance(x, list) and x else x)
+
+def find_key_recursive(obj, key):
+    if isinstance(obj, dict):
+        if key in obj:
+            return obj[key]
+        for v in obj.values():
+            r = find_key_recursive(v, key)
+            if r is not None:
+                return r
+    elif isinstance(obj, list):
+        for it in obj:
+            r = find_key_recursive(it, key)
+            if r is not None:
+                return r
+    return None
+
+def iter_records(node):
+    if isinstance(node, dict):
+        if any(k in node for k in ("record.id", "product.repositoryId", "product.displayName", "product.eanPrincipal")):
+            yield node
+        for v in node.values():
+            yield from iter_records(v)
+    elif isinstance(node, list):
+        for it in node:
+            yield from iter_records(it)
+
+def cast_price(val):
+    """Convierte distintos formatos a float. Soporta '1.795,00', '1126.72', '$1126.72c/u', etc."""
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+
+    s = str(val).strip()
+    if not s:
+        return None
+
+    s = s.replace("c/u", "").replace("c\\u002fu", "")
+    s = re.sub(r"[^\d\.,-]", "", s)  # deja solo dígitos y separadores
+    if not s:
+        return None
+
+    # Caso AR típico: '1.795,00' (miles '.' y decimales ',')
+    if s.count(",") == 1 and s.count(".") >= 1 and s.rfind(",") > s.rfind("."):
+        s = s.replace(".", "").replace(",", ".")
+    # Caso coma decimal sin miles: '649,35'
+    elif s.count(",") == 1 and s.count(".") == 0:
+        s = s.replace(",", ".")
+
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+def format_ar_price_no_thousands(value):
+    """1795.0 -> '1795,00' (sin separador de miles)."""
+    if value is None:
+        return None
+    return f"{float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", "")
+
+def extract_discount_price_from_dto_descuentos(dto_descuentos):
+    """
+    product.dtoDescuentos suele venir como:
+      ["[{\"precioDescuento\":\"$1126.72c/u\", ...}]"]
+    Devuelve float (precioDescuento) o None si no encuentra.
+    """
+    if dto_descuentos is None:
+        return None
+
+    chunks = dto_descuentos if isinstance(dto_descuentos, list) else [dto_descuentos]
+
+    for ch in chunks:
+        if ch is None:
+            continue
+        s = str(ch).strip()
+        if not s:
+            continue
+
+        try:
+            promos = json.loads(s)
+        except Exception:
+            continue
+
+        if isinstance(promos, dict):
+            promos = [promos]
+
+        if isinstance(promos, list):
+            for p in promos:
+                if not isinstance(p, dict):
+                    continue
+                raw_desc = p.get("precioDescuento")
+                price = cast_price(raw_desc)
+                if price is not None:
+                    return price
+
+    return None
+
+
+# ============================================
+# 🏷️ TAB COTO
 # ============================================
 with tab_coto:
     st.subheader("Coto · Relevamiento por EAN")
-    st.caption("Flujo: búsqueda (Ntk=product.eanPrincipal) → record.id → detalle (format=json) → sku.activePrice")
+    st.caption("Flujo: búsqueda → record.id → detalle (json) → ListPrice=sku.activePrice | Price=precioDescuento (si no hay promo, Price=ListPrice)")
 
     # Datos de entrada (Coto)
     from listado_coto import productos  # {"Nombre": {"empresa": "...", "categoría": "...", "subcategoría": "...", "marca": "...", "ean": "..."}}
@@ -482,19 +593,6 @@ with tab_coto:
                 return rid, (str(name) if name else None)
         return None, None
 
-    def cast_price(val):
-        if val is None:
-            return None
-        if isinstance(val, (int, float)):
-            return float(val)
-        s = str(val).strip()
-        if s.count(",") == 1 and s.count(".") > 1:  # '1.795,00' -> 1795.00
-            s = s.replace(".", "").replace(",", ".")
-        try:
-            return float(s)
-        except Exception:
-            return None
-
     def fetch_detail_by_record_id(session: requests.Session, record_id: str, sucursal: str):
         product_url = f"{BASE}/sitios/cdigi/productos/_/R-{record_id}"
         detail_url = f"{product_url}?Dy=1&idSucursal={sucursal}&format=json"
@@ -507,20 +605,23 @@ with tab_coto:
 
         ean = coerce_first(find_key_recursive(data, "product.eanPrincipal"))
         name = coerce_first(find_key_recursive(data, "product.displayName"))
-        raw = coerce_first(find_key_recursive(data, "sku.activePrice"))
 
-        price = cast_price(raw)
-        if price is None:
-            for alt in ("activePrice", "sku.price", "sku.listPrice", "price", "listPrice"):
-                raw_alt = coerce_first(find_key_recursive(data, alt))
-                price = cast_price(raw_alt)
-                if price is not None:
-                    break
+        # ListPrice = sku.activePrice
+        raw_list = coerce_first(find_key_recursive(data, "sku.activePrice"))
+        list_price = cast_price(raw_list)
+
+        # Price = precioDescuento dentro de product.dtoDescuentos
+        dto_desc = coerce_first(find_key_recursive(data, "product.dtoDescuentos"))
+        disc_price = extract_discount_price_from_dto_descuentos(dto_desc)
+
+        # ✅ Ajuste pedido: si no hay promo, Price = ListPrice
+        effective_price = disc_price if disc_price is not None else list_price
 
         return {
             "ean": ean,
             "name": name,
-            "price": format_ar_price_no_thousands(price),
+            "list_price": format_ar_price_no_thousands(list_price) if list_price is not None else None,
+            "price": format_ar_price_no_thousands(effective_price) if effective_price is not None else None,
             "detail_url": detail_url,
         }
 
@@ -550,7 +651,8 @@ with tab_coto:
                 "Marca": marca,
                 "Nombre": nombre_ref,
                 "EAN": ean,
-                "Precio": "Revisar",
+                "ListPrice": "Revisar",
+                "Price": "Revisar",
             }
 
             try:
@@ -558,10 +660,20 @@ with tab_coto:
                     record_id, name_hint = get_record_id_by_ean(s, ean, sucursal)
                     if record_id:
                         det = fetch_detail_by_record_id(s, record_id, sucursal)
+
                         row["EAN"] = det.get("ean") or ean
                         row["Nombre"] = det.get("name") or name_hint or nombre_ref
+
+                        if det.get("list_price") is not None:
+                            row["ListPrice"] = det.get("list_price")
+
                         if det.get("price") is not None:
-                            row["Precio"] = det.get("price")
+                            row["Price"] = det.get("price")
+
+                        # Si por algún motivo ListPrice vino pero Price no, aplicamos la misma regla:
+                        if row["Price"] in ("", None, "Revisar") and row["ListPrice"] not in ("", None, "Revisar"):
+                            row["Price"] = row["ListPrice"]
+
                         if return_debug:
                             debug_rows.append({"EAN": row["EAN"], "detail_url": det.get("detail_url")})
             except Exception:
@@ -574,7 +686,6 @@ with tab_coto:
         return (out, debug_rows) if return_debug else (out, None)
 
     if st.button("⚡ Ejecutar relevamiento (Coto)"):
-        # Construimos items con metadatos + ean
         items = []
         for nombre, meta in productos.items():
             meta = meta or {}
@@ -619,8 +730,12 @@ with tab_coto:
             st.write("record_id:", rid)
             st.write("name_hint:", nh)
 
-            if not rid:
-                st.warning("Preflight: no se encontró record_id para este EAN (puede no existir en Coto o cambió el endpoint).")
+            if rid:
+                det = fetch_detail_by_record_id(sess, rid, (suc or DEFAULT_SUCURSAL))
+                st.write("Preflight ListPrice:", det.get("list_price"))
+                st.write("Preflight Price (promo o = ListPrice):", det.get("price"))
+            else:
+                st.warning("Preflight: no se encontró record_id para este EAN.")
         except Exception as ex:
             st.error(f"Preflight error: {type(ex).__name__} -> {ex}")
             st.stop()
@@ -630,7 +745,7 @@ with tab_coto:
 
         df = pd.DataFrame(
             rows,
-            columns=["Empresa", "Categoría", "Subcategoría", "Marca", "Nombre", "EAN", "Precio"]
+            columns=["Empresa", "Categoría", "Subcategoría", "Marca", "Nombre", "EAN", "ListPrice", "Price"]
         )
 
         st.success("✅ Relevamiento Coto completado")
@@ -950,6 +1065,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
