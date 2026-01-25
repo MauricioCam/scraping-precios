@@ -1,4 +1,4 @@
-  productos= {
+productos = {
   "ARCOR POLVO ANANA BAJO AZUCARES SOBRE 18GR P/1L": {"empresa": "ARCOR", "categoría": "Beverages", "subcategoría": "Pbs", "marca": "ARCOR", "ean": "7790580129699",},
   "ARCOR POLVO ANANA REG SOBRE 15G P/1L": {"empresa": "ARCOR", "categoría": "Beverages", "subcategoría": "Pbs", "marca": "ARCOR", "ean": "7790580141516",},
   "ARCOR POLVO DURAZNO BAJO AZUCARES SOBRE 18GR P/1L": {"empresa": "ARCOR", "categoría": "Beverages", "subcategoría": "Pbs", "marca": "ARCOR", "ean": "7790580129927",},
@@ -1487,4 +1487,4 @@
   "WRIGLEY'S 45 GR SLIM SPEARMINT PAQ. 15 TABL.": {"empresa": "RESTO", "categoría": "Gums", "subcategoría": "ADULTOS", "marca": "WRIGLEY S", "ean": "22000006653",},
   "WRIGLEY'S DOUBLEMINT 15CHI. TABL. ADU. PQ. 40.5GR 1UN": {"empresa": "RESTO", "categoría": "Gums", "subcategoría": "ADULTOS", "marca": "WRIGLEY S", "ean": "22000006660",},
   "BUBBLE ROLL PINK POWER CHI. GLOBO EST. 58GR 1.8 MT DE CHICLE": {"empresa": "RESTO", "categoría": "Gums", "subcategoría": "INFANTILES", "marca": "O MARCAS", "ean": "7798130959376",},
-  }
+}
