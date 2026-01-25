@@ -764,25 +764,99 @@ with tab_coto:
         )
 
 # ============================================
-# 🟢 Jumbo (Cencosud / VTEX) — ListPrice + Price
+# 🟢 Jumbo (Cencosud / VTEX) — ListPrice + Price (real con promos vía orderForm)
 # ============================================
 with tab_jumbo:
     st.subheader("Jumbo · Relevamiento por EAN (VTEX)")
-    st.caption("Consulta por **EAN** en VTEX y devuelve **ListPrice** (regular) y **Price** (vigente). Si ListPrice no existe, usa Price. Fallback: Installments[].Value.")
+    st.caption(
+        "Busca por **EAN** en VTEX. Para el precio real con promo usa carrito: "
+        "**addToCartLink → /api/checkout/pub/orderForm**. "
+        "ListPrice = precio base (item.price). Price = precio final por unidad (con priceTags)."
+    )
 
-    # 🔁 Entrada unificada Cencosud (Jumbo / Vea, etc.)
     from listado_cencosud import productos  # {"Nombre": {"empresa": "...", "categoría": "...", "subcategoría": "...", "marca": "...", "ean": "..."}}
 
     HEADERS_JUMBO = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "application/json,text/plain,*/*",
+        "Referer": "https://www.jumbo.com.ar/",
+        "Origin": "https://www.jumbo.com.ar",
     }
 
-    def _safe_float(x):
+    def _safe_int(x):
         try:
-            return float(x)
+            return int(x)
         except Exception:
-            return 0.0
+            return 0
+
+    def _money_from_cents(cents: int) -> float:
+        return float(cents) / 100.0 if cents else 0.0
+
+    def _sum_price_tags(item: dict) -> int:
+        tags = item.get("priceTags") or []
+        total = 0
+        for t in tags:
+            if isinstance(t, dict):
+                total += _safe_int(t.get("value"))
+        return total  # suele ser negativo
+
+    def _compute_unit_final_from_item(item: dict) -> float:
+        """
+        Unitario final = (priceDefinition.total + sum(priceTags.value)) / quantity
+        (todo en centavos)
+        """
+        q = _safe_int(item.get("quantity")) or 1
+        pd = item.get("priceDefinition") or {}
+        total = _safe_int(pd.get("total"))
+        disc = _sum_price_tags(item)
+        unit_cents = int(round((total + disc) / q))
+        return _money_from_cents(unit_cents)
+
+    def _compute_unit_list_from_item(item: dict) -> float:
+        """
+        Unitario base (sin descuentos) = item.price / 100
+        En Jumbo/Vtex, item.price es el precio base por unidad (en centavos).
+        """
+        return _money_from_cents(_safe_int(item.get("price")))
+
+    def _get_orderform_prices_via_cart(add_to_cart_link: str, sku_id: str) -> tuple[float, float]:
+        """
+        Devuelve (list_unit, final_unit).
+        Crea una sesión, agrega al carrito, y lee orderForm.
+        """
+        s = requests.Session()
+        s.headers.update(HEADERS_JUMBO)
+
+        # 1) Add to cart (esto setea cookies y crea/modifica orderForm)
+        r_add = s.get(add_to_cart_link, timeout=15, allow_redirects=True)
+        r_add.raise_for_status()
+
+        # 2) Leer orderForm
+        r_of = s.get("https://www.jumbo.com.ar/api/checkout/pub/orderForm", timeout=15)
+        r_of.raise_for_status()
+        of = r_of.json()
+
+        items = of.get("items") or []
+        if not items:
+            return (0.0, 0.0)
+
+        # Buscar el item del sku agregado (por id)
+        item_sel = None
+        for it in items:
+            if str(it.get("id")) == str(sku_id):
+                item_sel = it
+                break
+        if not item_sel:
+            item_sel = items[0]
+
+        list_unit = _compute_unit_list_from_item(item_sel)
+        final_unit = _compute_unit_final_from_item(item_sel)
+
+        # Regla de consistencia: si no hay descuento aplicado (final_unit=0), usar list_unit si existe
+        if final_unit <= 0 and list_unit > 0:
+            final_unit = list_unit
+
+        return (list_unit, final_unit)
 
     if st.button("Ejecutar relevamiento (Jumbo)"):
         with st.spinner("⏳ Relevando Jumbo..."):
@@ -795,7 +869,6 @@ with tab_jumbo:
                 marca = str((datos.get("marca") or "")).strip()
                 ean = str((datos.get("ean") or "")).strip()
 
-                # Default
                 row = {
                     "Empresa": empresa,
                     "Categoría": categoria,
@@ -812,9 +885,9 @@ with tab_jumbo:
                         resultados.append(row)
                         continue
 
-                    # VTEX search por EAN
+                    # 1) VTEX search por EAN
                     url = f"https://www.jumbo.com.ar/api/catalog_system/pub/products/search?fq=alternateIds_Ean:{ean}"
-                    r = requests.get(url, headers=HEADERS_JUMBO, timeout=12)
+                    r = requests.get(url, headers=HEADERS_JUMBO, timeout=15)
                     r.raise_for_status()
                     data = r.json()
 
@@ -825,7 +898,7 @@ with tab_jumbo:
                     prod = data[0]
                     items = prod.get("items") or []
 
-                    # Elegimos item que matchee el EAN (ean o referenceId.Value). Si no, el primero.
+                    # Elegimos el item que matchee el EAN (preferente). Si no, el primero.
                     item_sel = None
                     for it in items:
                         if str(it.get("ean") or "").strip() == ean:
@@ -844,51 +917,51 @@ with tab_jumbo:
                         resultados.append(row)
                         continue
 
-                    # Nombre: preferimos el de la API
+                    # Nombre preferimos el de la API
                     nombre_api = (prod.get("productName") or "").strip()
                     row["Nombre"] = nombre_api or nombre_base
 
-                    # Offer (VTEX)
-                    offer = {}
-                    try:
-                        offer = (item_sel.get("sellers") or [])[0].get("commertialOffer", {}) or {}
-                    except Exception:
-                        offer = {}
+                    sku_id = str(item_sel.get("itemId") or "").strip()
+                    if not sku_id:
+                        resultados.append(row)
+                        continue
 
-                    # En VTEX típicamente:
-                    # - Price: precio vigente
-                    # - ListPrice: precio regular (si hay promo, suele ser mayor)
-                    # - PriceWithoutDiscount: a veces coincide con ListPrice
-                    price = _safe_float(offer.get("Price") or 0)
-                    list_price = _safe_float(
-                        offer.get("ListPrice") or offer.get("PriceWithoutDiscount") or 0
-                    )
+                    # 2) addToCartLink (CLAVE para orderForm real)
+                    sellers = item_sel.get("sellers") or []
+                    if not sellers:
+                        resultados.append(row)
+                        continue
 
-                    # Fallback (por si este tenant devuelve 0 en Price/ListPrice):
-                    # usar Installments[].Value como antes
-                    if price <= 0 and list_price <= 0:
-                        installments = offer.get("Installments") or []
-                        vals = [_safe_float(x.get("Value") or 0) for x in installments if isinstance(x, dict)]
-                        fallback_val = max(vals) if vals else 0.0
-                        # si solo tenemos un valor, lo usamos como Price y ListPrice
-                        if fallback_val > 0:
-                            price = fallback_val
-                            list_price = fallback_val
+                    add_to_cart_link = (sellers[0].get("addToCartLink") or "").strip()
+                    if not add_to_cart_link:
+                        resultados.append(row)
+                        continue
 
-                    # Regla pedida (consistencia): si no hay ListPrice, ListPrice = Price
-                    if price > 0 and list_price <= 0:
-                        list_price = price
+                    # 3) Carrito → orderForm → precios reales
+                    list_unit, final_unit = _get_orderform_prices_via_cart(add_to_cart_link, sku_id)
 
-                    # Si hay datos, formatear
-                    if list_price > 0:
-                        row["ListPrice"] = format_ar_price_no_thousands(list_price)
-                    if price > 0:
-                        row["Price"] = format_ar_price_no_thousands(price)
+                    # 4) Fallback: si por algún motivo el carrito no devuelve, usar commertialOffer.Price
+                    if list_unit <= 0 or final_unit <= 0:
+                        offer = (sellers[0].get("commertialOffer") or {})
+                        price_offer = float(offer.get("Price") or 0)  # suele ser en pesos
+                        if price_offer > 0:
+                            if list_unit <= 0:
+                                list_unit = price_offer
+                            if final_unit <= 0:
+                                final_unit = price_offer
+
+                    # Regla: si no hay ListPrice, ListPrice = Price
+                    if final_unit > 0 and list_unit <= 0:
+                        list_unit = final_unit
+
+                    if list_unit > 0:
+                        row["ListPrice"] = format_ar_price_no_thousands(list_unit)
+                    if final_unit > 0:
+                        row["Price"] = format_ar_price_no_thousands(final_unit)
 
                     resultados.append(row)
 
                 except Exception:
-                    # Se mantiene "Revisar"
                     resultados.append(row)
 
             df = pd.DataFrame(
@@ -1127,6 +1200,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
