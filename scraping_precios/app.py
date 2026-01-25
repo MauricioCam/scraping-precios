@@ -763,42 +763,69 @@ with tab_coto:
             mime="text/csv",
         )
 
-
 # ============================================
-# 🟢 Jumbo
+# 🟢 Jumbo (Cencosud / VTEX) — ListPrice + Price
 # ============================================
 with tab_jumbo:
     st.subheader("Jumbo · Relevamiento por EAN (VTEX)")
-    st.caption("Consulta por **EAN** y toma **Installments[].Value** del primer item/seller. Sin cookie.")
+    st.caption("Consulta por **EAN** en VTEX y devuelve **ListPrice** (regular) y **Price** (vigente). Si ListPrice no existe, usa Price. Fallback: Installments[].Value.")
+
+    # 🔁 Entrada unificada Cencosud (Jumbo / Vea, etc.)
+    from listado_cencosud import productos  # {"Nombre": {"empresa": "...", "categoría": "...", "subcategoría": "...", "marca": "...", "ean": "..."}}
 
     HEADERS_JUMBO = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "application/json,text/plain,*/*",
     }
 
+    def _safe_float(x):
+        try:
+            return float(x)
+        except Exception:
+            return 0.0
+
     if st.button("Ejecutar relevamiento (Jumbo)"):
         with st.spinner("⏳ Relevando Jumbo..."):
             resultados = []
-            for nombre, datos in productos.items():
-                ean = str(datos.get("ean") or "").strip()
+
+            for nombre_base, datos in productos.items():
+                empresa = str((datos.get("empresa") or "")).strip()
+                categoria = str((datos.get("categoría") or "")).strip()
+                subcategoria = str((datos.get("subcategoría") or "")).strip()
+                marca = str((datos.get("marca") or "")).strip()
+                ean = str((datos.get("ean") or "")).strip()
+
+                # Default
+                row = {
+                    "Empresa": empresa,
+                    "Categoría": categoria,
+                    "Subcategoría": subcategoria,
+                    "Marca": marca,
+                    "Nombre": nombre_base,
+                    "EAN": ean,
+                    "ListPrice": "Revisar",
+                    "Price": "Revisar",
+                }
+
                 try:
                     if not ean:
-                        resultados.append({"EAN": "", "Nombre": nombre, "Precio": "Revisar"})
+                        resultados.append(row)
                         continue
 
                     # VTEX search por EAN
                     url = f"https://www.jumbo.com.ar/api/catalog_system/pub/products/search?fq=alternateIds_Ean:{ean}"
                     r = requests.get(url, headers=HEADERS_JUMBO, timeout=12)
+                    r.raise_for_status()
                     data = r.json()
 
                     if not data:
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+                        resultados.append(row)
                         continue
 
                     prod = data[0]
                     items = prod.get("items") or []
 
-                    # Elegimos el item que matchee el EAN (ean o referenceId.Value). Si no, el primero.
+                    # Elegimos item que matchee el EAN (ean o referenceId.Value). Si no, el primero.
                     item_sel = None
                     for it in items:
                         if str(it.get("ean") or "").strip() == ean:
@@ -813,28 +840,62 @@ with tab_jumbo:
                     if not item_sel and items:
                         item_sel = items[0]
 
-                    # Obtenemos Installments[].Value del primer seller
-                    installments = []
+                    if not item_sel:
+                        resultados.append(row)
+                        continue
+
+                    # Nombre: preferimos el de la API
+                    nombre_api = (prod.get("productName") or "").strip()
+                    row["Nombre"] = nombre_api or nombre_base
+
+                    # Offer (VTEX)
+                    offer = {}
                     try:
-                        installments = (item_sel.get("sellers") or [])[0].get("commertialOffer", {}).get("Installments") or []
+                        offer = (item_sel.get("sellers") or [])[0].get("commertialOffer", {}) or {}
                     except Exception:
-                        installments = []
+                        offer = {}
 
-                    # Tomamos el mayor Value disponible (suele ser 1 cuota, p.ej. American Express)
-                    vals = [float(x.get("Value") or 0) for x in installments if isinstance(x, dict)]
-                    price_val = max(vals) if vals else 0.0
+                    # En VTEX típicamente:
+                    # - Price: precio vigente
+                    # - ListPrice: precio regular (si hay promo, suele ser mayor)
+                    # - PriceWithoutDiscount: a veces coincide con ListPrice
+                    price = _safe_float(offer.get("Price") or 0)
+                    list_price = _safe_float(
+                        offer.get("ListPrice") or offer.get("PriceWithoutDiscount") or 0
+                    )
 
-                    if price_val > 0:
-                        precio_formateado = format_ar_price_no_thousands(price_val)
-                        nombre_prod = prod.get("productName") or nombre
-                        resultados.append({"EAN": ean, "Nombre": nombre_prod, "Precio": precio_formateado})
-                    else:
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+                    # Fallback (por si este tenant devuelve 0 en Price/ListPrice):
+                    # usar Installments[].Value como antes
+                    if price <= 0 and list_price <= 0:
+                        installments = offer.get("Installments") or []
+                        vals = [_safe_float(x.get("Value") or 0) for x in installments if isinstance(x, dict)]
+                        fallback_val = max(vals) if vals else 0.0
+                        # si solo tenemos un valor, lo usamos como Price y ListPrice
+                        if fallback_val > 0:
+                            price = fallback_val
+                            list_price = fallback_val
+
+                    # Regla pedida (consistencia): si no hay ListPrice, ListPrice = Price
+                    if price > 0 and list_price <= 0:
+                        list_price = price
+
+                    # Si hay datos, formatear
+                    if list_price > 0:
+                        row["ListPrice"] = format_ar_price_no_thousands(list_price)
+                    if price > 0:
+                        row["Price"] = format_ar_price_no_thousands(price)
+
+                    resultados.append(row)
 
                 except Exception:
-                    resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+                    # Se mantiene "Revisar"
+                    resultados.append(row)
 
-            df = pd.DataFrame(resultados, columns=["EAN", "Nombre", "Precio"])
+            df = pd.DataFrame(
+                resultados,
+                columns=["Empresa", "Categoría", "Subcategoría", "Marca", "Nombre", "EAN", "ListPrice", "Price"]
+            )
+
             st.success("✅ Relevamiento Jumbo completado")
             st.dataframe(df, use_container_width=True)
 
@@ -845,6 +906,7 @@ with tab_jumbo:
                 file_name=f"precios_jumbo_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 # ============================================
 # 🟢 Vea
@@ -1065,6 +1127,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
