@@ -674,12 +674,19 @@ with tab_vea:
                 file_name=f"precios_vea_{fecha}.csv",
                 mime="text/csv",
             )
+
 # ============================================
-# 🟡 Cooperativa Obrera
+# 🟡 Cooperativa Obrera (ListPrice + Price)
 # ============================================
 with tab_coope:
     st.subheader("Cooperativa Obrera · Relevamiento por cod_coope")
-    st.caption("Consulta el endpoint oficial y toma **precio de lista**.")
+    st.caption("Consulta el endpoint oficial y devuelve **ListPrice (precio_anterior)** y **Price (precio)**.")
+
+    import requests
+    import pandas as pd
+    from datetime import datetime
+
+    from listado_cooperativa import productos  # ✅ nuevo origen
 
     HEADERS_COOPE = {
         "User-Agent": "Mozilla/5.0",
@@ -689,12 +696,29 @@ with tab_coope:
     if st.button("🟡 Ejecutar relevamiento (Cooperativa Obrera)"):
         with st.spinner("⏳ Relevando Cooperativa Obrera..."):
             resultados = []
-            for nombre, datos in productos.items():
-                ean = str(datos.get("ean", "")).strip()
-                cod = str(datos.get("cod_coope", "")).strip()
 
-                row = {"EAN": ean, "Nombre": nombre, "Precio": "Revisar"}
-                if not cod:
+            for nombre, meta in productos.items():
+                empresa = str(meta.get("empresa", "")).strip()
+                categoria = str(meta.get("categoría", "")).strip()
+                subcategoria = str(meta.get("subcategoría", "")).strip()
+                marca = str(meta.get("marca", "")).strip()
+                ean = str(meta.get("ean", "")).strip()
+                cod = str(meta.get("cod_coope", "")).strip()
+
+                # ✅ fila base (por defecto Revisar)
+                row = {
+                    "Empresa": empresa,
+                    "Categoría": categoria,
+                    "Subcategoría": subcategoria,
+                    "Marca": marca,
+                    "Nombre": nombre,
+                    "EAN": ean,
+                    "ListPrice": "Revisar",
+                    "Price": "Revisar",
+                }
+
+                # ✅ Si NO_ENCONTRADO, dejamos Revisar
+                if (not cod) or (cod.upper() == "NO_ENCONTRADO"):
                     resultados.append(row)
                     continue
 
@@ -702,23 +726,42 @@ with tab_coope:
                     url = f"https://api.lacoopeencasa.coop/api/articulo/detalle?cod_interno={cod}&simple=false"
                     r = requests.get(url, headers=HEADERS_COOPE, timeout=12)
                     r.raise_for_status()
-                    j = r.json() if r.headers.get("content-type","").startswith("application/json") else {}
+
+                    is_json = (r.headers.get("content-type", "") or "").startswith("application/json")
+                    j = r.json() if is_json else {}
 
                     datos_node = (j or {}).get("datos") or {}
-                    precio_ant = datos_node.get("precio_anterior")
 
-                    # precio_anterior viene como string ("919.00")
-                    val = float(precio_ant) if precio_ant not in (None, "") else 0.0
+                    # ✅ ListPrice = precio_anterior
+                    precio_anterior = datos_node.get("precio_anterior")  # ej "2050.00"
+                    # ✅ Price = precio
+                    precio = datos_node.get("precio")  # ej "1279.00"
 
-                    if val > 0:
-                        row["Precio"] = format_ar_price_no_thousands(val)
+                    def to_float(x):
+                        try:
+                            return float(x) if x not in (None, "") else 0.0
+                        except Exception:
+                            return 0.0
+
+                    lp = to_float(precio_anterior)
+                    pr = to_float(precio)
+
+                    if lp > 0:
+                        row["ListPrice"] = format_ar_price_no_thousands(lp)
+                    if pr > 0:
+                        row["Price"] = format_ar_price_no_thousands(pr)
 
                 except Exception:
-                    pass  # dejamos "Revisar" si falla algo
+                    # dejamos "Revisar" en ambos si falla algo
+                    pass
 
                 resultados.append(row)
 
-            df = pd.DataFrame(resultados, columns=["EAN", "Nombre", "Precio"])
+            df = pd.DataFrame(
+                resultados,
+                columns=["Empresa", "Categoría", "Subcategoría", "Marca", "Nombre", "EAN", "ListPrice", "Price"],
+            )
+
             st.success("✅ Relevamiento Cooperativa Obrera completado")
             st.dataframe(df, use_container_width=True)
 
@@ -728,7 +771,9 @@ with tab_coope:
                 data=df.to_csv(index=False).encode("utf-8"),
                 file_name=f"precios_cooperativa_{fecha}.csv",
                 mime="text/csv",
-            )
+           _present>
+::contentReference[oaicite:0]{index=0}
+
 
 # ============================================
 # 🔴 HiperLibertad (ListPrice por EAN)
@@ -812,6 +857,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
