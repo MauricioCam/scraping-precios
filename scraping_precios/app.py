@@ -686,12 +686,30 @@ with tab_coope:
     import pandas as pd
     from datetime import datetime
 
-    from listado_cooperativa import productos  # ✅ nuevo origen
+    # ✅ nuevo origen del listado
+    # listado_cooperativa.py debe exponer un dict (ej: productos = {...})
+    from listado_cooperativa import productos
 
     HEADERS_COOPE = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "application/json,text/plain,*/*",
     }
+
+    def _is_no_encontrado(cod: str) -> bool:
+        """
+        Normaliza casos tipo: 'NO_ENCONTRADO', 'no_encontrado ', 'No Encontrado', etc.
+        """
+        c = (cod or "").strip().upper()
+        c = c.replace(" ", "_")
+        return c == "NO_ENCONTRADO" or c == "NO" or c == "NO_ENCONTRADO,"  # tolerancia
+
+    def _to_float(x):
+        try:
+            if x in (None, ""):
+                return 0.0
+            return float(str(x))
+        except Exception:
+            return 0.0
 
     if st.button("🟡 Ejecutar relevamiento (Cooperativa Obrera)"):
         with st.spinner("⏳ Relevando Cooperativa Obrera..."):
@@ -703,9 +721,11 @@ with tab_coope:
                 subcategoria = str(meta.get("subcategoría", "")).strip()
                 marca = str(meta.get("marca", "")).strip()
                 ean = str(meta.get("ean", "")).strip()
-                cod = str(meta.get("cod_coope", "")).strip()
 
-                # ✅ fila base (por defecto Revisar)
+                # ✅ soporta ambas llaves por robustez (cod_coope / cod_coop)
+                cod = str(meta.get("cod_coope", meta.get("cod_coop", ""))).strip()
+
+                # ✅ fila base requerida
                 row = {
                     "Empresa": empresa,
                     "Categoría": categoria,
@@ -713,46 +733,43 @@ with tab_coope:
                     "Marca": marca,
                     "Nombre": nombre,
                     "EAN": ean,
-                    "ListPrice": "Revisar",
-                    "Price": "Revisar",
+                    "ListPrice": "Revisar",  # precio_anterior
+                    "Price": "Revisar",      # precio
                 }
 
-                # ✅ Si NO_ENCONTRADO, dejamos Revisar
-                if (not cod) or (cod.upper() == "NO_ENCONTRADO"):
+                # ✅ Regla: si NO_ENCONTRADO -> Revisar
+                if (not cod) or _is_no_encontrado(cod):
                     resultados.append(row)
                     continue
 
                 try:
-                    url = f"https://api.lacoopeencasa.coop/api/articulo/detalle?cod_interno={cod}&simple=false"
-                    r = requests.get(url, headers=HEADERS_COOPE, timeout=12)
+                    url = "https://api.lacoopeencasa.coop/api/articulo/detalle"
+                    params = {"cod_interno": cod, "simple": "false"}
+
+                    r = requests.get(url, params=params, headers=HEADERS_COOPE, timeout=12)
                     r.raise_for_status()
 
-                    is_json = (r.headers.get("content-type", "") or "").startswith("application/json")
-                    j = r.json() if is_json else {}
+                    ctype = (r.headers.get("content-type", "") or "").lower()
+                    j = r.json() if ctype.startswith("application/json") else {}
 
                     datos_node = (j or {}).get("datos") or {}
 
                     # ✅ ListPrice = precio_anterior
-                    precio_anterior = datos_node.get("precio_anterior")  # ej "2050.00"
+                    lp_raw = datos_node.get("precio_anterior")
                     # ✅ Price = precio
-                    precio = datos_node.get("precio")  # ej "1279.00"
+                    pr_raw = datos_node.get("precio")
 
-                    def to_float(x):
-                        try:
-                            return float(x) if x not in (None, "") else 0.0
-                        except Exception:
-                            return 0.0
+                    lp = _to_float(lp_raw)
+                    pr = _to_float(pr_raw)
 
-                    lp = to_float(precio_anterior)
-                    pr = to_float(precio)
-
+                    # Si vienen válidos, los mostramos formateados
                     if lp > 0:
                         row["ListPrice"] = format_ar_price_no_thousands(lp)
                     if pr > 0:
                         row["Price"] = format_ar_price_no_thousands(pr)
 
                 except Exception:
-                    # dejamos "Revisar" en ambos si falla algo
+                    # Si falla, se queda en "Revisar"
                     pass
 
                 resultados.append(row)
@@ -765,14 +782,15 @@ with tab_coope:
             st.success("✅ Relevamiento Cooperativa Obrera completado")
             st.dataframe(df, use_container_width=True)
 
+            # (Opcional) descarga CSV, lo dejo porque ya estaba en tu flujo
             fecha = datetime.now().strftime("%Y-%m-%d")
             st.download_button(
                 label="⬇ Descargar CSV (Cooperativa Obrera)",
                 data=df.to_csv(index=False).encode("utf-8"),
                 file_name=f"precios_cooperativa_{fecha}.csv",
                 mime="text/csv",
-           _present>
-::contentReference[oaicite:0]{index=0}
+            )
+
 
 
 # ============================================
@@ -857,6 +875,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
