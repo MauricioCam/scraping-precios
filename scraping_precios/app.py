@@ -32,7 +32,7 @@ tab_carrefour, tab_dia, tab_chango, tab_coto, tab_jumbo, tab_vea, tab_coope, tab
 )
 
 # ============================================
-# 🛒 Carrefour (por EAN) — ListPrice + Oferta (Price vs PromotionTeasers)
+# 🛒 Carrefour (por EAN) — ListPrice + Oferta
 # ============================================
 with tab_carrefour:
     st.subheader("Carrefour · Hiper Olivos")
@@ -51,40 +51,41 @@ with tab_carrefour:
 
     def _safe_float(x, default=0.0) -> float:
         try:
-            if x is None:
-                return float(default)
             return float(x)
         except Exception:
             return float(default)
 
+    def _has_tarjeta_carrefour(commertial_offer: dict) -> bool:
+        """Detecta promo 'Tarjeta Carrefour 15%' (case-insensitive)."""
+        teasers = commertial_offer.get("PromotionTeasers") or []
+        for t in teasers:
+            name = (t or {}).get("Name") or ""
+            if "tarjeta carrefour" in name.lower():
+                return True
+        return False
+
     def _extract_teaser_text(commertial_offer: dict) -> str:
         """
-        Toma PromotionTeasers[].Name y devuelve el texto entre 'PROMO-' y 'Max'.
-        Ej: 'PROMO-2do al 70% Max 8 unidades ...' -> '2do al 70%'.
-        Si no matchea, devuelve el Name original (limpio) del primer teaser.
+        'PROMO-2do al 70% Max 8 unidades ...' -> '2do al 70%'
         """
         teasers = commertial_offer.get("PromotionTeasers") or []
         if not teasers:
             return ""
 
-        raw = (teasers[0] or {}).get("Name") or ""
-        raw = str(raw).strip()
-        if not raw:
-            return ""
+        raw = str((teasers[0] or {}).get("Name") or "").strip()
+        raw_l = raw.lower()
 
-        raw_lower = raw.lower()
-        # Buscamos "promo-" (case-insensitive) y luego " max" (case-insensitive)
         promo_key = "promo-"
         max_key = " max"
 
-        i = raw_lower.find(promo_key)
+        i = raw_l.find(promo_key)
         if i >= 0:
             start = i + len(promo_key)
-            j = raw_lower.find(max_key, start)
+            j = raw_l.find(max_key, start)
             if j > start:
                 return raw[start:j].strip()
 
-        return raw  # fallback
+        return raw
 
     if st.button("🔍 Ejecutar relevamiento (Carrefour)"):
         with st.spinner("⏳ Relevando Carrefour..."):
@@ -97,7 +98,6 @@ with tab_carrefour:
                 marca = (datos.get("marca") or "").strip()
                 ean = str(datos.get("ean") or "").strip()
 
-                # Fila base (fallback)
                 row_base = {
                     "Empresa": empresa,
                     "Categoría": categoria,
@@ -125,7 +125,6 @@ with tab_carrefour:
                     prod = data[0]
                     items = prod.get("items") or []
 
-                    # Elegimos item que matchee EAN. Si no, el primero.
                     item_sel = None
                     for it in items:
                         if str(it.get("ean") or "").strip() == ean:
@@ -146,37 +145,33 @@ with tab_carrefour:
 
                     offer = item_sel["sellers"][0].get("commertialOffer", {})
 
-                    # Precios numéricos para comparar
-                    list_price_num = _safe_float(offer.get("ListPrice"), 0)
-                    price_num = _safe_float(offer.get("Price"), 0)
-
-                    # Formateo ListPrice (como venías haciendo)
-                    list_price_f = format_ar_price_no_thousands(list_price_num) if list_price_num > 0 else ""
-
-                    # Nombre: priorizamos el de la API; si no, el de tu listado
-                    nombre_api = (prod.get("productName") or "").strip()
-                    nombre_final = nombre_api if nombre_api else nombre_base
-
-                    # ✅ Lógica de OFERTA:
-                    # a) Si Price != ListPrice -> Oferta = Price
-                    # b) Si Price == ListPrice -> Oferta = texto parseado de PromotionTeasers[].Name
-                    if price_num > 0 and list_price_num > 0 and price_num != list_price_num:
-                        oferta_val = format_ar_price_no_thousands(price_num)
-                    else:
-                        oferta_val = _extract_teaser_text(offer)  # puede devolver "" si no hay teaser
-
-                    # Si faltan ambos precios y tampoco teaser, Revisar
-                    if not list_price_f and not oferta_val:
+                    # 🚨 REGLA PRIORITARIA: Tarjeta Carrefour
+                    if _has_tarjeta_carrefour(offer):
                         resultados.append({
                             "Empresa": empresa,
                             "Categoría": categoria,
                             "Subcategoría": subcategoria,
                             "Marca": marca,
-                            "Nombre": nombre_final,
+                            "Nombre": prod.get("productName") or nombre_base,
                             "EAN": ean,
-                            "ListPrice": "Revisar",
-                            "Oferta": "Revisar",
+                            "ListPrice": "Sin Precio",
+                            "Oferta": "Sin Precio",
                         })
+                        continue
+
+                    list_price = _safe_float(offer.get("ListPrice"), 0)
+                    price = _safe_float(offer.get("Price"), 0)
+
+                    list_price_f = format_ar_price_no_thousands(list_price) if list_price > 0 else ""
+
+                    # Lógica de Oferta
+                    if price > 0 and list_price > 0 and price != list_price:
+                        oferta = format_ar_price_no_thousands(price)
+                    else:
+                        oferta = _extract_teaser_text(offer)
+
+                    if not list_price_f and not oferta:
+                        resultados.append(row_base)
                         continue
 
                     resultados.append({
@@ -184,10 +179,10 @@ with tab_carrefour:
                         "Categoría": categoria,
                         "Subcategoría": subcategoria,
                         "Marca": marca,
-                        "Nombre": nombre_final,
+                        "Nombre": prod.get("productName") or nombre_base,
                         "EAN": ean,
                         "ListPrice": list_price_f if list_price_f else "Revisar",
-                        "Oferta": oferta_val if oferta_val else "",
+                        "Oferta": oferta if oferta else "",
                     })
 
                 except Exception:
@@ -195,7 +190,7 @@ with tab_carrefour:
 
             df = pd.DataFrame(
                 resultados,
-                columns=["Empresa", "Categoría", "Subcategoría", "Marca", "Nombre", "EAN", "ListPrice", "Oferta"]
+                columns=["Empresa", "Categoría", "Subcategoría", "Marca", "Nombre", "EAN", "ListPrice", "Oferta"],
             )
 
             st.success("✅ Relevamiento Carrefour completado")
@@ -1223,6 +1218,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
