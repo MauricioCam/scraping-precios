@@ -533,7 +533,8 @@ def iter_records(node):
             yield from iter_records(it)
 
 # ============================================
-# 🏷️ Coto (ListPrice + Price; si no hay promo, Price = ListPrice)
+# 🏷️ Coto (ListPrice + Oferta texto)
+# Oferta = textoDescuento dentro de product.dtoDescuentos
 # ============================================
 from urllib.parse import urljoin
 import requests
@@ -605,14 +606,14 @@ def format_ar_price_no_thousands(value):
         return None
     return f"{float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", "")
 
-def extract_discount_price_from_dto_descuentos(dto_descuentos):
+def extract_texto_descuento_from_dto_descuentos(dto_descuentos) -> str:
     """
     product.dtoDescuentos suele venir como:
-      ["[{\"precioDescuento\":\"$1126.72c/u\", ...}]"]
-    Devuelve float (precioDescuento) o None si no encuentra.
+      ["[{\"textoDescuento\":\"70% 2da\", ...}]"]
+    Devuelve textoDescuento (string) o "" si no encuentra / viene vacío.
     """
     if dto_descuentos is None:
-        return None
+        return ""
 
     chunks = dto_descuentos if isinstance(dto_descuentos, list) else [dto_descuentos]
 
@@ -635,12 +636,12 @@ def extract_discount_price_from_dto_descuentos(dto_descuentos):
             for p in promos:
                 if not isinstance(p, dict):
                     continue
-                raw_desc = p.get("precioDescuento")
-                price = cast_price(raw_desc)
-                if price is not None:
-                    return price
+                txt = (p.get("textoDescuento") or "").strip()
+                # ✅ pedido: si está vacío, devolver vacío (no "Revisar")
+                if txt != "":
+                    return txt
 
-    return None
+    return ""
 
 
 # ============================================
@@ -648,7 +649,7 @@ def extract_discount_price_from_dto_descuentos(dto_descuentos):
 # ============================================
 with tab_coto:
     st.subheader("Coto · Relevamiento por EAN")
-    st.caption("Flujo: búsqueda → record.id → detalle (json) → ListPrice=sku.activePrice | Price=precioDescuento (si no hay promo, Price=ListPrice)")
+    st.caption("Flujo: búsqueda → record.id → detalle (json) → ListPrice=sku.activePrice | Oferta=textoDescuento (si vacío, vacío)")
 
     # Datos de entrada (Coto)
     from listado_coto import productos  # {"Nombre": {"empresa": "...", "categoría": "...", "subcategoría": "...", "marca": "...", "ean": "..."}}
@@ -701,18 +702,15 @@ with tab_coto:
         raw_list = coerce_first(find_key_recursive(data, "sku.activePrice"))
         list_price = cast_price(raw_list)
 
-        # Price = precioDescuento dentro de product.dtoDescuentos
+        # ✅ Oferta = textoDescuento dentro de product.dtoDescuentos (si vacío, "")
         dto_desc = coerce_first(find_key_recursive(data, "product.dtoDescuentos"))
-        disc_price = extract_discount_price_from_dto_descuentos(dto_desc)
-
-        # ✅ Ajuste pedido: si no hay promo, Price = ListPrice
-        effective_price = disc_price if disc_price is not None else list_price
+        oferta_txt = extract_texto_descuento_from_dto_descuentos(dto_desc)
 
         return {
             "ean": ean,
             "name": name,
             "list_price": format_ar_price_no_thousands(list_price) if list_price is not None else None,
-            "price": format_ar_price_no_thousands(effective_price) if effective_price is not None else None,
+            "oferta": oferta_txt,  # string, puede ser ""
             "detail_url": detail_url,
         }
 
@@ -743,7 +741,7 @@ with tab_coto:
                 "Nombre": nombre_ref,
                 "EAN": ean,
                 "ListPrice": "Revisar",
-                "Price": "Revisar",
+                "Oferta": "Revisar",
             }
 
             try:
@@ -758,12 +756,9 @@ with tab_coto:
                         if det.get("list_price") is not None:
                             row["ListPrice"] = det.get("list_price")
 
-                        if det.get("price") is not None:
-                            row["Price"] = det.get("price")
-
-                        # Si por algún motivo ListPrice vino pero Price no, aplicamos la misma regla:
-                        if row["Price"] in ("", None, "Revisar") and row["ListPrice"] not in ("", None, "Revisar"):
-                            row["Price"] = row["ListPrice"]
+                        # ✅ Oferta: si viene "", debe quedar ""
+                        if det.get("oferta") is not None:
+                            row["Oferta"] = det.get("oferta")
 
                         if return_debug:
                             debug_rows.append({"EAN": row["EAN"], "detail_url": det.get("detail_url")})
@@ -824,7 +819,7 @@ with tab_coto:
             if rid:
                 det = fetch_detail_by_record_id(sess, rid, (suc or DEFAULT_SUCURSAL))
                 st.write("Preflight ListPrice:", det.get("list_price"))
-                st.write("Preflight Price (promo o = ListPrice):", det.get("price"))
+                st.write("Preflight Oferta (textoDescuento):", det.get("oferta"))
             else:
                 st.warning("Preflight: no se encontró record_id para este EAN.")
         except Exception as ex:
@@ -836,7 +831,7 @@ with tab_coto:
 
         df = pd.DataFrame(
             rows,
-            columns=["Empresa", "Categoría", "Subcategoría", "Marca", "Nombre", "EAN", "ListPrice", "Price"]
+            columns=["Empresa", "Categoría", "Subcategoría", "Marca", "Nombre", "EAN", "ListPrice", "Oferta"]
         )
 
         st.success("✅ Relevamiento Coto completado")
@@ -853,6 +848,7 @@ with tab_coto:
             file_name=f"precios_coto_{fecha}.csv",
             mime="text/csv",
         )
+
 
 
 # ============================================
@@ -1219,6 +1215,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
