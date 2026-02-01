@@ -146,36 +146,74 @@ with tab_carrefour:
             )
 
 # ============================================
-# 🟥 Día
+# 🟥 Día (VTEX) — ListPrice + Oferta (PromotionTeasers)
 # ============================================
 with tab_dia:
     st.subheader("Día · Relevamiento por cod_dia (skuId)")
-    st.caption("Consulta VTEX por **skuId (cod_dia)** y toma **commertialOffer.ListPrice** del primer item/seller.")
+    st.caption(
+        "Consulta VTEX por **skuId (cod_dia)** y devuelve **ListPrice** y **PromotionTeasers[].Name** "
+        "del primer item/seller."
+    )
+
+    # ✅ Nuevo import (reemplaza productos_streamlit.py)
+    from listado_dia import productos  # dict: { "Nombre": {empresa,categoría,subcategoría,marca,ean,cod_dia} }
 
     HEADERS_DIA = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "application/json,text/plain,*/*",
     }
 
+    def _get_offer_teasers(commertial_offer: dict) -> str:
+        """Devuelve los nombres de PromotionTeasers (si existen) en un string."""
+        teasers = commertial_offer.get("PromotionTeasers") or []
+        names = []
+        for t in teasers:
+            n = (t or {}).get("Name")
+            if n:
+                names.append(str(n).strip())
+        return " | ".join(names)
+
     if st.button("🔴 Ejecutar relevamiento (Día)"):
         with st.spinner("⏳ Relevando Día..."):
             resultados = []
+
             for nombre, datos in productos.items():
+                empresa = (datos.get("empresa") or "").strip()
+                categoria = (datos.get("categoría") or "").strip()
+                subcategoria = (datos.get("subcategoría") or "").strip()
+                marca = (datos.get("marca") or "").strip()
+                ean = (datos.get("ean") or "").strip()
                 cod_dia = str(datos.get("cod_dia") or "").strip()
-                ean = datos.get("ean")
+
+                # Base row (por si hay fallas)
+                row_base = {
+                    "Empresa": empresa,
+                    "Categoría": categoria,
+                    "Subcategoría": subcategoria,
+                    "Marca": marca,
+                    "Nombre": nombre,
+                    "EAN": ean,
+                    "ListPrice": 0,
+                    "Oferta": "Revisar",
+                }
+
                 try:
                     if not cod_dia:
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+                        resultados.append(row_base)
                         continue
 
                     # VTEX search por skuId (cod_dia)
-                    url = f"https://diaonline.supermercadosdia.com.ar/api/catalog_system/pub/products/search?fq=skuId:{cod_dia}"
+                    url = (
+                        "https://diaonline.supermercadosdia.com.ar/"
+                        f"api/catalog_system/pub/products/search?fq=skuId:{cod_dia}"
+                    )
+
                     r = requests.get(url, headers=HEADERS_DIA, timeout=12)
                     r.raise_for_status()
                     data = r.json()
 
                     if not data:
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+                        resultados.append(row_base)
                         continue
 
                     prod = data[0]
@@ -191,23 +229,36 @@ with tab_dia:
                         item_sel = items[0]
 
                     if not item_sel:
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+                        resultados.append(row_base)
                         continue
 
-                    offer = (item_sel.get("sellers") or [{}])[0].get("commertialOffer", {}) if item_sel.get("sellers") else {}
-                    list_price = offer.get("ListPrice", 0) or 0
+                    sellers = item_sel.get("sellers") or []
+                    if not sellers:
+                        resultados.append(row_base)
+                        continue
 
-                    if list_price > 0:
-                        precio_formateado = format_ar_price_no_thousands(list_price)
-                        nombre_prod = prod.get("productName") or nombre
-                        resultados.append({"EAN": ean, "Nombre": nombre_prod, "Precio": precio_formateado})
-                    else:
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+                    comm_offer = (sellers[0].get("commertialOffer") or {})  # VTEX lo escribe así (commertial)
+                    list_price = comm_offer.get("ListPrice", 0) or 0
+                    oferta = _get_offer_teasers(comm_offer)
+
+                    # Nombre desde API si querés (opcional). Si no, dejamos el del dict.
+                    # nombre_api = (prod.get("productName") or "").strip()
+                    # if nombre_api:
+                    #     row_base["Nombre"] = nombre_api
+
+                    row_base["ListPrice"] = list_price
+                    row_base["Oferta"] = oferta if oferta else ""
+
+                    resultados.append(row_base)
 
                 except Exception:
-                    resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+                    resultados.append(row_base)
 
-            df = pd.DataFrame(resultados, columns=["EAN", "Nombre", "Precio"])
+            df = pd.DataFrame(
+                resultados,
+                columns=["Empresa", "Categoría", "Subcategoría", "Marca", "Nombre", "EAN", "ListPrice", "Oferta"],
+            )
+
             st.success("✅ Relevamiento Día completado")
             st.dataframe(df, use_container_width=True)
 
@@ -218,6 +269,7 @@ with tab_dia:
                 file_name=f"precios_dia_{fecha}.csv",
                 mime="text/csv",
             )
+
     
 # ============================================
 # 🟢 ChangoMás (por RefId)
@@ -811,6 +863,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
