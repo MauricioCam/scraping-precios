@@ -146,17 +146,17 @@ with tab_carrefour:
             )
 
 # ============================================
-# 🟥 Día (VTEX) — ListPrice + Oferta (PromotionTeasers)
+# 🟥 Día (VTEX) — ListPrice + Oferta (Price vs PromotionTeasers)
 # ============================================
 with tab_dia:
     st.subheader("Día · Relevamiento por cod_dia (skuId)")
     st.caption(
-        "Consulta VTEX por **skuId (cod_dia)** y devuelve **ListPrice** y **PromotionTeasers[].Name** "
-        "del primer item/seller."
+        "Consulta VTEX por **skuId (cod_dia)** y devuelve **ListPrice** y **Oferta**.\n"
+        "Oferta: si **Price != ListPrice** → muestra **Price**; si no → muestra **PromotionTeasers[].Name**."
     )
 
     # ✅ Nuevo import (reemplaza productos_streamlit.py)
-    from listado_dia import productos  # dict: { "Nombre": {empresa,categoría,subcategoría,marca,ean,cod_dia} }
+    from listado_dia import productos  # { "Nombre": {empresa,categoría,subcategoría,marca,ean,cod_dia} }
 
     HEADERS_DIA = {
         "User-Agent": "Mozilla/5.0",
@@ -173,6 +173,14 @@ with tab_dia:
                 names.append(str(n).strip())
         return " | ".join(names)
 
+    def _safe_float(x, default=0.0) -> float:
+        try:
+            if x is None:
+                return float(default)
+            return float(x)
+        except Exception:
+            return float(default)
+
     if st.button("🔴 Ejecutar relevamiento (Día)"):
         with st.spinner("⏳ Relevando Día..."):
             resultados = []
@@ -185,8 +193,8 @@ with tab_dia:
                 ean = (datos.get("ean") or "").strip()
                 cod_dia = str(datos.get("cod_dia") or "").strip()
 
-                # Base row (por si hay fallas)
-                row_base = {
+                # Base row (fallback ante fallas)
+                row = {
                     "Empresa": empresa,
                     "Categoría": categoria,
                     "Subcategoría": subcategoria,
@@ -199,7 +207,7 @@ with tab_dia:
 
                 try:
                     if not cod_dia:
-                        resultados.append(row_base)
+                        resultados.append(row)
                         continue
 
                     # VTEX search por skuId (cod_dia)
@@ -213,7 +221,7 @@ with tab_dia:
                     data = r.json()
 
                     if not data:
-                        resultados.append(row_base)
+                        resultados.append(row)
                         continue
 
                     prod = data[0]
@@ -229,30 +237,37 @@ with tab_dia:
                         item_sel = items[0]
 
                     if not item_sel:
-                        resultados.append(row_base)
+                        resultados.append(row)
                         continue
 
                     sellers = item_sel.get("sellers") or []
                     if not sellers:
-                        resultados.append(row_base)
+                        resultados.append(row)
                         continue
 
-                    comm_offer = (sellers[0].get("commertialOffer") or {})  # VTEX lo escribe así (commertial)
-                    list_price = comm_offer.get("ListPrice", 0) or 0
-                    oferta = _get_offer_teasers(comm_offer)
+                    # VTEX lo escribe así: "commertialOffer"
+                    comm_offer = sellers[0].get("commertialOffer") or {}
 
-                    # Nombre desde API si querés (opcional). Si no, dejamos el del dict.
-                    # nombre_api = (prod.get("productName") or "").strip()
-                    # if nombre_api:
-                    #     row_base["Nombre"] = nombre_api
+                    list_price = _safe_float(comm_offer.get("ListPrice", 0), 0)
+                    price = _safe_float(comm_offer.get("Price", 0), 0)
 
-                    row_base["ListPrice"] = list_price
-                    row_base["Oferta"] = oferta if oferta else ""
+                    # Guardamos ListPrice (numérico)
+                    row["ListPrice"] = list_price
 
-                    resultados.append(row_base)
+                    # ✅ LÓGICA DE OFERTA
+                    # 1) Si Price != ListPrice → Oferta = Price (formateado)
+                    # 2) Si Price == ListPrice → Oferta = PromotionTeasers[].Name
+                    # (si no hay teasers, queda vacío)
+                    if price > 0 and list_price > 0 and price != list_price:
+                        row["Oferta"] = format_ar_price_no_thousands(price)
+                    else:
+                        teasers_txt = _get_offer_teasers(comm_offer)
+                        row["Oferta"] = teasers_txt if teasers_txt else ""
+
+                    resultados.append(row)
 
                 except Exception:
-                    resultados.append(row_base)
+                    resultados.append(row)
 
             df = pd.DataFrame(
                 resultados,
@@ -863,6 +878,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
