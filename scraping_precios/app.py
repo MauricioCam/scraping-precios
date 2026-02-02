@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 from datetime import datetime
+from urllib.parse import urljoin
 
 # ============================================
 # Config app
@@ -11,9 +12,9 @@ st.title("📊 Relevamiento de Precios")
 st.caption("Esta herramienta tiene por objetivo relevar los precios de todo el portfolio de forma automática")
 
 # ============================================
-# Datos de entrada (Carrefour)
+# Datos de entrada (diccionario compartido)
 # ============================================
-from listado_carrefour import productos  # {"Nombre": {"empresa": "...", "categoría": "...", ... , "ean": "..."}}
+from productos_streamlit import productos  # {"Nombre": {"ean": "...", "productId": "..."}}
 
 # ============================================
 # Utilidades comunes
@@ -24,20 +25,47 @@ def format_ar_price_no_thousands(value):
         return None
     return f"{float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", "")
 
+def coerce_first(x):
+    return (x[0] if isinstance(x, list) and x else x)
+
+def find_key_recursive(obj, key):
+    if isinstance(obj, dict):
+        if key in obj:
+            return obj[key]
+        for v in obj.values():
+            r = find_key_recursive(v, key)
+            if r is not None:
+                return r
+    elif isinstance(obj, list):
+        for it in obj:
+            r = find_key_recursive(it, key)
+            if r is not None:
+                return r
+    return None
+
+def iter_records(node):
+    if isinstance(node, dict):
+        if any(k in node for k in ("record.id","product.repositoryId","product.displayName","product.eanPrincipal")):
+            yield node
+        for v in node.values():
+            yield from iter_records(v)
+    elif isinstance(node, list):
+        for it in node:
+            yield from iter_records(it)
+
 # ============================================
 # Pestañas
 # ============================================
-tab_carrefour, tab_dia, tab_chango, tab_coto, tab_jumbo, tab_vea, tab_coope, tab_hiper = st.tabs(
-    ["🛒 Carrefour", "🟥 Día", "🟢 ChangoMás", "🏷️ Coto", "🟢 Jumbo", "🟢 Vea", "🟡 Cooperativa", "🔴 Libertad"]
-)
+tab_carrefour, tab_dia, tab_chango, tab_coto, tab_jumbo, tab_vea, tab_coope, tab_hiper = st.tabs(["🛒 Carrefour", "🟥 Día", "🟢 ChangoMás", "🏷️ Coto", "🟢 Jumbo", "🟢 Vea", "🟡 Cooperativa", "🔴 Libertad"])
 
 # ============================================
-# 🛒 Carrefour (por EAN) — ListPrice + Oferta
+# 🛒 Carrefour (por EAN)
 # ============================================
 with tab_carrefour:
     st.subheader("Carrefour · Hiper Olivos")
-    st.write("Relevamiento automático de todos los SKUs, aplicando la sucursal **Hiper Olivos**. (Busca por **EAN**)")
+    st.write("Relevamiento automático de todos los SKUs, aplicando la sucursal **Hiper Olivos**. (Ahora busca por **EAN**)")
 
+    # --- Cookie / headers Carrefour (VTEX)
     COOKIE_SEGMENT = (
         "eyJjYW1wYWlnbnMiOm51bGwsImNoYW5uZWwiOiIxIiwicHJpY2VUYWJsZXMiOm51bGwsInJlZ2lvbklkIjpudWxsLCJ1dG1fY2FtcGFpZ24iOm51bGws"
         "InV0bV9zb3VyY2UiOm51bGwsInV0bWlfY2FtcGFpZ24iOm51bGwsImN1cnJlbmN5Q29kZSI6IkFSUyIsImN1cnJlbmN5U3ltYm9sIjoiJCIsImNvdW50"
@@ -49,82 +77,29 @@ with tab_carrefour:
         "Accept": "application/json,text/plain,*/*",
     }
 
-    def _safe_float(x, default=0.0) -> float:
-        try:
-            return float(x)
-        except Exception:
-            return float(default)
-
-    def _has_tarjeta_carrefour(commertial_offer: dict) -> bool:
-        """Detecta promo 'Tarjeta Carrefour 15%' (case-insensitive)."""
-        teasers = commertial_offer.get("PromotionTeasers") or []
-        for t in teasers:
-            name = (t or {}).get("Name") or ""
-            if "tarjeta carrefour" in name.lower():
-                return True
-        return False
-
-    def _extract_teaser_text(commertial_offer: dict) -> str:
-        """
-        'PROMO-2do al 70% Max 8 unidades ...' -> '2do al 70%'
-        """
-        teasers = commertial_offer.get("PromotionTeasers") or []
-        if not teasers:
-            return ""
-
-        raw = str((teasers[0] or {}).get("Name") or "").strip()
-        raw_l = raw.lower()
-
-        promo_key = "promo-"
-        max_key = " max"
-
-        i = raw_l.find(promo_key)
-        if i >= 0:
-            start = i + len(promo_key)
-            j = raw_l.find(max_key, start)
-            if j > start:
-                return raw[start:j].strip()
-
-        return raw
-
     if st.button("🔍 Ejecutar relevamiento (Carrefour)"):
         with st.spinner("⏳ Relevando Carrefour..."):
             resultados = []
-
-            for nombre_base, datos in productos.items():
-                empresa = (datos.get("empresa") or "").strip()
-                categoria = (datos.get("categoría") or "").strip()
-                subcategoria = (datos.get("subcategoría") or "").strip()
-                marca = (datos.get("marca") or "").strip()
+            for nombre, datos in productos.items():
                 ean = str(datos.get("ean") or "").strip()
-
-                row_base = {
-                    "Empresa": empresa,
-                    "Categoría": categoria,
-                    "Subcategoría": subcategoria,
-                    "Marca": marca,
-                    "Nombre": nombre_base,
-                    "EAN": ean,
-                    "ListPrice": "Revisar",
-                    "Oferta": "Revisar",
-                }
-
                 try:
                     if not ean:
-                        resultados.append(row_base)
+                        resultados.append({"EAN": "", "Nombre": nombre, "Precio": "Revisar"})
                         continue
 
+                    # Buscar por EAN en VTEX
                     url = f"https://www.carrefour.com.ar/api/catalog_system/pub/products/search?fq=alternateIds_Ean:{ean}"
                     r = requests.get(url, headers=HEADERS_CARR, timeout=12)
                     data = r.json()
 
                     if not data:
-                        resultados.append(row_base)
+                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
                         continue
 
                     prod = data[0]
                     items = prod.get("items") or []
 
+                    # Elegimos el item que matchee el EAN (ean o referenceId.Value). Si no, el primero.
                     item_sel = None
                     for it in items:
                         if str(it.get("ean") or "").strip() == ean:
@@ -140,149 +115,67 @@ with tab_carrefour:
                         item_sel = items[0]
 
                     if not item_sel or not item_sel.get("sellers"):
-                        resultados.append(row_base)
+                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
                         continue
 
                     offer = item_sel["sellers"][0].get("commertialOffer", {})
+                    price_list = float(offer.get("ListPrice") or 0)
+                    price = float(offer.get("Price") or 0)
+                    final_price = price_list if price_list > 0 else price
 
-                    # 🚨 REGLA PRIORITARIA: Tarjeta Carrefour
-                    if _has_tarjeta_carrefour(offer):
-                        resultados.append({
-                            "Empresa": empresa,
-                            "Categoría": categoria,
-                            "Subcategoría": subcategoria,
-                            "Marca": marca,
-                            "Nombre": prod.get("productName") or nombre_base,
-                            "EAN": ean,
-                            "ListPrice": "Sin Precio",
-                            "Oferta": "Sin Precio",
-                        })
-                        continue
-
-                    list_price = _safe_float(offer.get("ListPrice"), 0)
-                    price = _safe_float(offer.get("Price"), 0)
-
-                    list_price_f = format_ar_price_no_thousands(list_price) if list_price > 0 else ""
-
-                    # Lógica de Oferta
-                    if price > 0 and list_price > 0 and price != list_price:
-                        oferta = format_ar_price_no_thousands(price)
+                    if final_price and final_price > 0:
+                        precio_formateado = format_ar_price_no_thousands(final_price)
+                        nombre_prod = prod.get("productName") or nombre
+                        resultados.append({"EAN": ean, "Nombre": nombre_prod, "Precio": precio_formateado})
                     else:
-                        oferta = _extract_teaser_text(offer)
-
-                    if not list_price_f and not oferta:
-                        resultados.append(row_base)
-                        continue
-
-                    resultados.append({
-                        "Empresa": empresa,
-                        "Categoría": categoria,
-                        "Subcategoría": subcategoria,
-                        "Marca": marca,
-                        "Nombre": prod.get("productName") or nombre_base,
-                        "EAN": ean,
-                        "ListPrice": list_price_f if list_price_f else "Revisar",
-                        "Oferta": oferta if oferta else "",
-                    })
+                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
 
                 except Exception:
-                    resultados.append(row_base)
+                    resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
 
-            df = pd.DataFrame(
-                resultados,
-                columns=["Empresa", "Categoría", "Subcategoría", "Marca", "Nombre", "EAN", "ListPrice", "Oferta"],
-            )
-
+            df = pd.DataFrame(resultados, columns=["EAN", "Nombre", "Precio"])
             st.success("✅ Relevamiento Carrefour completado")
             st.dataframe(df, use_container_width=True)
 
             fecha = datetime.now().strftime("%Y-%m-%d")
             st.download_button(
                 label="⬇ Descargar CSV (Carrefour)",
-                data=df.to_csv(index=False).encode("utf-8"),
+                data=df.to_csv(index=False).encode('utf-8'),
                 file_name=f"precios_carrefour_{fecha}.csv",
                 mime="text/csv",
             )
 
-
-
 # ============================================
-# 🟥 Día (VTEX) — ListPrice + Oferta (Price vs PromotionTeasers)
+# 🟥 Día
 # ============================================
 with tab_dia:
     st.subheader("Día · Relevamiento por cod_dia (skuId)")
-    st.caption(
-        "Consulta VTEX por **skuId (cod_dia)** y devuelve **ListPrice** y **Oferta**.\n"
-        "Oferta: si **Price != ListPrice** → muestra **Price**; si no → muestra **PromotionTeasers[].Name**."
-    )
-
-    # ✅ Nuevo import (reemplaza productos_streamlit.py)
-    from listado_dia import productos  # { "Nombre": {empresa,categoría,subcategoría,marca,ean,cod_dia} }
+    st.caption("Consulta VTEX por **skuId (cod_dia)** y toma **commertialOffer.ListPrice** del primer item/seller.")
 
     HEADERS_DIA = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "application/json,text/plain,*/*",
     }
 
-    def _get_offer_teasers(commertial_offer: dict) -> str:
-        """Devuelve los nombres de PromotionTeasers (si existen) en un string."""
-        teasers = commertial_offer.get("PromotionTeasers") or []
-        names = []
-        for t in teasers:
-            n = (t or {}).get("Name")
-            if n:
-                names.append(str(n).strip())
-        return " | ".join(names)
-
-    def _safe_float(x, default=0.0) -> float:
-        try:
-            if x is None:
-                return float(default)
-            return float(x)
-        except Exception:
-            return float(default)
-
     if st.button("🔴 Ejecutar relevamiento (Día)"):
         with st.spinner("⏳ Relevando Día..."):
             resultados = []
-
             for nombre, datos in productos.items():
-                empresa = (datos.get("empresa") or "").strip()
-                categoria = (datos.get("categoría") or "").strip()
-                subcategoria = (datos.get("subcategoría") or "").strip()
-                marca = (datos.get("marca") or "").strip()
-                ean = (datos.get("ean") or "").strip()
                 cod_dia = str(datos.get("cod_dia") or "").strip()
-
-                # Base row (fallback ante fallas)
-                row = {
-                    "Empresa": empresa,
-                    "Categoría": categoria,
-                    "Subcategoría": subcategoria,
-                    "Marca": marca,
-                    "Nombre": nombre,
-                    "EAN": ean,
-                    "ListPrice": 0,
-                    "Oferta": "Revisar",
-                }
-
+                ean = datos.get("ean")
                 try:
                     if not cod_dia:
-                        resultados.append(row)
+                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
                         continue
 
                     # VTEX search por skuId (cod_dia)
-                    url = (
-                        "https://diaonline.supermercadosdia.com.ar/"
-                        f"api/catalog_system/pub/products/search?fq=skuId:{cod_dia}"
-                    )
-
+                    url = f"https://diaonline.supermercadosdia.com.ar/api/catalog_system/pub/products/search?fq=skuId:{cod_dia}"
                     r = requests.get(url, headers=HEADERS_DIA, timeout=12)
                     r.raise_for_status()
                     data = r.json()
 
                     if not data:
-                        resultados.append(row)
+                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
                         continue
 
                     prod = data[0]
@@ -298,43 +191,23 @@ with tab_dia:
                         item_sel = items[0]
 
                     if not item_sel:
-                        resultados.append(row)
+                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
                         continue
 
-                    sellers = item_sel.get("sellers") or []
-                    if not sellers:
-                        resultados.append(row)
-                        continue
+                    offer = (item_sel.get("sellers") or [{}])[0].get("commertialOffer", {}) if item_sel.get("sellers") else {}
+                    list_price = offer.get("ListPrice", 0) or 0
 
-                    # VTEX lo escribe así: "commertialOffer"
-                    comm_offer = sellers[0].get("commertialOffer") or {}
-
-                    list_price = _safe_float(comm_offer.get("ListPrice", 0), 0)
-                    price = _safe_float(comm_offer.get("Price", 0), 0)
-
-                    # Guardamos ListPrice (numérico)
-                    row["ListPrice"] = list_price
-
-                    # ✅ LÓGICA DE OFERTA
-                    # 1) Si Price != ListPrice → Oferta = Price (formateado)
-                    # 2) Si Price == ListPrice → Oferta = PromotionTeasers[].Name
-                    # (si no hay teasers, queda vacío)
-                    if price > 0 and list_price > 0 and price != list_price:
-                        row["Oferta"] = format_ar_price_no_thousands(price)
+                    if list_price > 0:
+                        precio_formateado = format_ar_price_no_thousands(list_price)
+                        nombre_prod = prod.get("productName") or nombre
+                        resultados.append({"EAN": ean, "Nombre": nombre_prod, "Precio": precio_formateado})
                     else:
-                        teasers_txt = _get_offer_teasers(comm_offer)
-                        row["Oferta"] = teasers_txt if teasers_txt else ""
-
-                    resultados.append(row)
+                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
 
                 except Exception:
-                    resultados.append(row)
+                    resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
 
-            df = pd.DataFrame(
-                resultados,
-                columns=["Empresa", "Categoría", "Subcategoría", "Marca", "Nombre", "EAN", "ListPrice", "Oferta"],
-            )
-
+            df = pd.DataFrame(resultados, columns=["EAN", "Nombre", "Precio"])
             st.success("✅ Relevamiento Día completado")
             st.dataframe(df, use_container_width=True)
 
@@ -345,201 +218,74 @@ with tab_dia:
                 file_name=f"precios_dia_{fecha}.csv",
                 mime="text/csv",
             )
-
     
 # ============================================
-# 🟢 ChangoMás (por EAN + Oferta optimizada)
+# 🟢 ChangoMás (por RefId)
 # ============================================
 with tab_chango:
-    st.subheader("ChangoMás · Relevamiento por EAN (VTEX + Checkout)")
-    st.caption(
-        "Busca por **EAN** en VTEX Search. "
-        "**ListPrice** sale de `commertialOffer.ListPrice`. "
-        "**Oferta**: si `Price < ListPrice` muestra `% off`; si no, detecta mecánicas vía Checkout (2da al %, 3x2 y opcional 4x2)."
-    )
-
-    # Datos de entrada (ChangoMás)
-    from listado_chango import productos  # {"Nombre": {"empresa": "...", "categoría": "...", "subcategoría": "...", "marca": "...", "ean": "..."}}
+    st.subheader("ChangoMás · Relevamiento por RefId (VTEX)")
+    st.caption("Consulta por **RefId** usando VTEX Search (`alternateIds_RefId`). Early exit + timeouts cortos. Sin SC alternativos.")
 
     # Parámetros
     DEFAULT_SEGMENT = (
-        "eyJjYW1wYWlnbnMiOm51bGwsImNoYW5uZWwiOiIxIiwicHJpY2VUYWJsZXMiOm51bGwsInJlZ2lvbklkIjoidjIuNDdERkY5REI3QkE5NEEyMEI1ODRGRjYzQTA3RUIxQ0EiLCJ1dG1fY2FtcGFpZ24iOm51bGwsInV0bV9zb3VyY2UiOm51bGwsInV0bWlfY2FtcGFpZ24iOm51bGwsImN1cnJlbmN5Q29kZSI6IkFSUyIsImN1cnJlbmN5U3ltYm9sIjoiJCIsImNvdW50cnlDb2RlIjoiQVJHIiwiY3VsdHVyZUluZm8iOiJlcy1BUiIsImNoYW5uZWxQcml2YWN5IjoicHVibGljIn0"
+        "eyJjYW1wYWlnbnMiOm51bGwsImNoYW5uZWwiOiIxIiwicHJpY2VUYWJsZXMiOm51bGwsInJlZ2lvbklkIjoidjIuNDdERkY5REI3QkE5NEEyMEI1ODRGRjYzQTA3RUIxQ0EiLCJ1dG1fY2FtcGFpZ24iOm51bGwsInV0bV9zb3VyY2UiOm51bGwsInV0bWlfY2FtcGFpZ24iOm51bGwsImN1cnJlbmN5Q29kZSI6IkFSUyIsImN1cnJlbmN5U3ltYm9sIjoiJCIsImNvdW50cnlDb2RlIjoiQVJHIiwiY3VsdHVyZUluZm8iOiJlcy1BUiIsImFkbWluX2N1bHR1cmVJbmZvIjoiZXMtQVIiLCJjaGFubmVsUHJpdmFjeSI6InB1YmxpYyJ9"
     )
     vtex_segment = st.text_input("vtex_segment (ChangoMás)", value=DEFAULT_SEGMENT, type="password")
     sc_primary = st.text_input("Sales channel (sc)", value="1", help="Canal de ventas VTEX, ej: 1")
-    # 🔥 Nuevo: para performance, permitir desactivar qty=4
-    try_4x2 = st.checkbox("Detectar ofertas 4x2 (requiere 1 request extra por producto sin oferta)", value=True)
     show_debug_cm = st.checkbox("Mostrar requests (debug)", value=False)
 
     # Constantes
     BASE_CM = "https://www.masonline.com.ar"
-    TIMEOUTS = (3, 20)  # (connect, read)
+    TIMEOUTS = (3, 7)  # (connect, read)
 
-    def compute_percent_off(list_price: float, price: float):
-        """Devuelve % off entero si price < list_price."""
-        try:
-            if list_price > 0 and price > 0 and price < list_price:
-                pct = round((1 - (price / list_price)) * 100)
-                return int(pct) if pct > 0 else None
-        except Exception:
-            pass
-        return None
+    def first_listprice_or_price(item: dict) -> float:
+        best_price = 0.0
+        for seller in (item.get("sellers") or []):
+            co = seller.get("commertialOffer") or {}
+            lp = float(co.get("ListPrice") or 0)
+            if lp > 0:
+                return lp  # 🎯 early exit
+            p = float(co.get("Price") or 0)
+            if p > best_price:
+                best_price = p
+        return best_price
 
-    def simplify_offer_text(text: str) -> str:
-        """
-        Resumen:
-        - NxM (3x2, 4x2) -> '3x2'
-        - '2da/2do al XX%' -> '2da al 50%'
-        - fallback -> texto completo
-        """
-        import re
-        if not text:
-            return ""
-
-        m = re.search(r"\b(\d+\s*x\s*\d+)\b", text, flags=re.IGNORECASE)
-        if m:
-            return m.group(1).replace(" ", "")
-
-        m2 = re.search(r"\b(2da|2do)\b.*?\b(al)\b.*?(\d{1,3}\s*%)", text, flags=re.IGNORECASE)
-        if m2:
-            frag = m2.group(0)
-            frag = re.split(r"\b(Reg|SURTIDO|NACIONAL|Max|LLEVANDO)\b", frag, flags=re.IGNORECASE)[0]
-            return " ".join(frag.split()).strip()
-
-        return text.strip()
-
-    def vt_search_by_ean(session: requests.Session, ean: str, sc: str, headers: dict):
+    def vt_search_by_refid(session: requests.Session, refid: str, sc: str, headers: dict):
         url = f"{BASE_CM}/api/catalog_system/pub/products/search"
-
-        # 1) alternateIds_Ean
-        params = {"fq": f"alternateIds_Ean:{ean}", "sc": sc}
+        params = {"fq": f"alternateIds_RefId:{refid}", "sc": sc}
         r = session.get(url, headers=headers, params=params, timeout=TIMEOUTS)
         if show_debug_cm:
-            st.text(f"SEARCH altEan: {r.url} | {r.status_code}")
+            st.text(f"SEARCH {sc}: {r.url} | {r.status_code} | {r.headers.get('content-type')}")
         r.raise_for_status()
         data = r.json()
-        if data:
-            return data, r.url
+        if not data:
+            return None, None
+        prod = data[0]
+        items = prod.get("items", []) or []
+        return prod, items
 
-        # 2) fallback ean
-        params = {"fq": f"ean:{ean}", "sc": sc}
+    def vt_variations_price(session: requests.Session, product_id: str, refid: str, sc: str, headers: dict):
+        url = f"{BASE_CM}/api/catalog_system/pub/products/variations/{product_id}"
+        params = {"sc": sc}
         r = session.get(url, headers=headers, params=params, timeout=TIMEOUTS)
         if show_debug_cm:
-            st.text(f"SEARCH ean: {r.url} | {r.status_code}")
+            st.text(f"VARIATIONS {sc}: {r.url} | {r.status_code}")
         r.raise_for_status()
-        return r.json(), r.url
+        data = r.json()
+        name = data.get("name")
+        for sku in (data.get("skus") or []):
+            refids = [str(x.get("Value")) for x in (sku.get("referenceId") or []) if isinstance(x, dict)]
+            if str(refid) in refids or not refids:
+                lp = float(sku.get("listPrice") or 0)
+                if lp > 0:
+                    return name, lp
+                bp = float(sku.get("bestPrice") or 0)
+                return name, (bp if bp > 0 else None)
+        return name, None
 
-    def pick_item_by_ean(items: list, ean: str):
-        ean = str(ean).strip()
-        for it in items or []:
-            if str(it.get("ean") or "").strip() == ean:
-                return it
-            for ref in (it.get("referenceId") or []):
-                if str(ref.get("Value") or "").strip() == ean:
-                    return it
-        return items[0] if items else None
+    st.markdown(f"**Productos cargados:** {len(productos)} (se espera `cod_maso` en cada ítem)")
 
-    # ----------------------------
-    # ✅ Checkout optimizado (1 carrito + updates)
-    # ----------------------------
-    def create_orderform(session: requests.Session, headers: dict):
-        url = f"{BASE_CM}/api/checkout/pub/orderForm"
-        r = session.post(url, headers=headers, json={}, timeout=TIMEOUTS)
-        if show_debug_cm:
-            st.text(f"ORDERFORM create: {r.status_code}")
-        r.raise_for_status()
-        return r.json()
-
-    def add_item_orderform(session: requests.Session, orderform_id: str, sku_id: str, seller_id: str, qty: int, headers: dict):
-        url = f"{BASE_CM}/api/checkout/pub/orderForm/{orderform_id}/items"
-        payload = {"orderItems": [{"id": str(sku_id), "quantity": int(qty), "seller": str(seller_id)}]}
-        r = session.post(url, headers=headers, json=payload, timeout=TIMEOUTS)
-        if show_debug_cm:
-            st.text(f"ORDERFORM add qty={qty}: {r.status_code}")
-        r.raise_for_status()
-        return r.json()
-
-    def update_item_qty(session: requests.Session, orderform_id: str, index: int, qty: int, headers: dict):
-        """
-        VTEX: update quantity del item por índice.
-        Nota: 'seller' no siempre es necesario, pero lo incluimos si VTEX lo exige.
-        """
-        url = f"{BASE_CM}/api/checkout/pub/orderForm/{orderform_id}/items/update"
-        payload = {"orderItems": [{"index": int(index), "quantity": int(qty)}]}
-        r = session.post(url, headers=headers, json=payload, timeout=TIMEOUTS)
-        if show_debug_cm:
-            st.text(f"ORDERFORM update idx={index} qty={qty}: {r.status_code}")
-        r.raise_for_status()
-        return r.json()
-
-    def extract_promos(of: dict):
-        rbd = (of.get("ratesAndBenefitsData") or {})
-        ids = rbd.get("rateAndBenefitsIdentifiers") or []
-        names = []
-        for x in ids:
-            if isinstance(x, dict):
-                n = x.get("name") or x.get("id") or x.get("description")
-                if n:
-                    names.append(str(n).strip())
-
-        # dedupe
-        out, seen = [], set()
-        for n in names:
-            if n not in seen:
-                out.append(n)
-                seen.add(n)
-        return out
-
-    def detect_offer_via_checkout_fast(session: requests.Session, sku_id: str, seller_id: str, headers: dict, try_4: bool):
-        """
-        Optimización:
-        - 1 orderForm por producto
-        - add qty=2 (detecta 2da al %)
-        - si no hay promo, update qty=3 (detecta 3x2)
-        - opcional: update qty=4 (detecta 4x2)
-        """
-        of0 = create_orderform(session, headers=headers)
-        of_id = of0.get("orderFormId")
-        if not of_id:
-            return ""
-
-        # 1) qty=2
-        of = add_item_orderform(session, of_id, sku_id, seller_id, qty=2, headers=headers)
-        promos = extract_promos(of)
-        if promos:
-            simp = [simplify_offer_text(p) for p in promos]
-            return " | ".join(dict.fromkeys([s for s in simp if s]))
-
-        # Encontrar índice del item agregado (normalmente 0)
-        items = of.get("items") or []
-        idx = 0
-        if items:
-            # confirmamos que sea el sku correcto; si no, igual usamos 0 como fallback
-            for i, it in enumerate(items):
-                if str(it.get("id") or "").strip() == str(sku_id):
-                    idx = i
-                    break
-
-        # 2) qty=3
-        of = update_item_qty(session, of_id, index=idx, qty=3, headers=headers)
-        promos = extract_promos(of)
-        if promos:
-            simp = [simplify_offer_text(p) for p in promos]
-            return " | ".join(dict.fromkeys([s for s in simp if s]))
-
-        # 3) qty=4 (solo si el usuario lo habilita)
-        if try_4:
-            of = update_item_qty(session, of_id, index=idx, qty=4, headers=headers)
-            promos = extract_promos(of)
-            if promos:
-                simp = [simplify_offer_text(p) for p in promos]
-                return " | ".join(dict.fromkeys([s for s in simp if s]))
-
-        return ""
-
-    st.markdown(f"**Productos cargados:** {len(productos)} (se espera `ean` en cada ítem)")
-
-    if st.button("🟢 Ejecutar relevamiento (ChangoMás por EAN)"):
+    if st.button("🟢 Ejecutar relevamiento (ChangoMás por RefId)"):
         with st.spinner("⏳ Relevando ChangoMás..."):
             s = requests.Session()
             headers_cm = {
@@ -553,96 +299,65 @@ with tab_chango:
             prog = st.progress(0, text="Procesando…")
             done = 0
 
-            sc = sc_primary.strip() or "1"
+            for nombre, datos in productos.items():
+                refid = str(datos.get("cod_maso", "")).strip()  # ⚠️ clave esperada
+                ean   = str(datos.get("ean", "")).strip()
+                if not refid:
+                    resultados.append({"EAN": ean, "RefId": "", "Nombre": nombre, "Precio": "Revisar"})
+                    done += 1
+                    prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
+                    continue
 
-            for nombre_base, datos in productos.items():
-                empresa = (datos.get("empresa") or "").strip()
-                categoria = (datos.get("categoría") or "").strip()
-                subcategoria = (datos.get("subcategoría") or "").strip()
-                marca = (datos.get("marca") or "").strip()
-                ean = str(datos.get("ean") or "").strip()
-
-                row = {
-                    "Empresa": empresa,
-                    "Categoría": categoria,
-                    "Subcategoría": subcategoria,
-                    "Marca": marca,
-                    "Nombre": nombre_base,
-                    "EAN": ean,
-                    "ListPrice": "Sin Precio",
-                    "Oferta": "",
-                }
-
+                row = {"EAN": ean, "RefId": refid, "Nombre": nombre, "Precio": "Revisar"}
                 try:
-                    if not ean:
-                        resultados.append(row)
-                        done += 1
-                        prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
-                        continue
+                    found_price = None
+                    found_name = None
 
-                    data, used_url = vt_search_by_ean(s, ean, sc, headers_cm)
-                    if not data:
-                        resultados.append(row)
-                        done += 1
-                        prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
-                        continue
+                    prod, items = vt_search_by_refid(s, refid, sc_primary.strip(), headers_cm)
+                    if prod and items:
+                        # Item cuyo RefId coincida; si no, el primero
+                        item_sel = None
+                        for it in items:
+                            for rfi in (it.get("referenceId") or []):
+                                if str(rfi.get("Value", "")).strip() == refid:
+                                    item_sel = it
+                                    break
+                            if item_sel:
+                                break
+                        if not item_sel and items:
+                            item_sel = items[0]
 
-                    prod = data[0]
-                    items = prod.get("items") or []
-                    item_sel = pick_item_by_ean(items, ean)
+                        price_num = first_listprice_or_price(item_sel) if item_sel else 0.0
+                        found_name = prod.get("productName") or nombre
 
-                    if not item_sel or not item_sel.get("sellers"):
-                        resultados.append(row)
-                        done += 1
-                        prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
-                        continue
+                        if price_num <= 0:
+                            pid = str(prod.get("productId") or "").strip()
+                            if pid:
+                                v_name, v_price = vt_variations_price(s, pid, refid, sc_primary.strip(), headers_cm)
+                                if v_price:
+                                    price_num = v_price
+                                    found_name = v_name or found_name
 
-                    # Nombre: preferimos API
-                    nombre_api = (prod.get("productName") or "").strip()
-                    row["Nombre"] = nombre_api if nombre_api else nombre_base
+                        if price_num > 0:
+                            found_price = price_num
 
-                    seller0 = (item_sel.get("sellers") or [{}])[0]
-                    seller_id = str(seller0.get("sellerId") or "1").strip() or "1"
-                    co = seller0.get("commertialOffer") or {}
-
-                    list_price = float(co.get("ListPrice") or 0)
-                    price = float(co.get("Price") or 0)
-
-                    # ListPrice (columna pedida)
-                    row["ListPrice"] = format_ar_price_no_thousands(list_price) if list_price > 0 else "Sin Precio"
-
-                    # 1) Oferta por descuento unitario (% off) si Price < ListPrice
-                    pct = compute_percent_off(list_price, price)
-                    if pct:
-                        row["Oferta"] = f"{pct}% off"
-                    else:
-                        # 2) Mecánicas vía checkout (optimizado): qty=2 -> qty=3 -> opcional qty=4
-                        sku_id = str(item_sel.get("itemId") or "").strip()
-                        if sku_id:
-                            row["Oferta"] = detect_offer_via_checkout_fast(
-                                s,
-                                sku_id=sku_id,
-                                seller_id=seller_id,
-                                headers=headers_cm,
-                                try_4=try_4x2,
-                            )
-
-                    if show_debug_cm:
-                        st.text(f"OK {ean} | {used_url}")
+                    if found_price is not None:
+                        # 👇 Nuevo: si el precio supera 1.000.000, marcar "Revisar"
+                        if float(found_price) > 1_000_000:
+                            row["Precio"] = "Revisar"
+                            row["Nombre"] = found_name or nombre
+                        else:
+                            row["Precio"] = format_ar_price_no_thousands(found_price)
+                            row["Nombre"] = found_name or nombre
 
                 except Exception:
-                    # dejamos ListPrice = Sin Precio, Oferta vacío
-                    pass
+                    pass  # dejamos "Revisar"
 
                 resultados.append(row)
                 done += 1
                 prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
 
-            df = pd.DataFrame(
-                resultados,
-                columns=["Empresa", "Categoría", "Subcategoría", "Marca", "Nombre", "EAN", "ListPrice", "Oferta"]
-            )
-
+            df = pd.DataFrame(resultados, columns=["EAN", "RefId", "Nombre", "Precio"])
             st.success("✅ Relevamiento ChangoMás completado")
             st.dataframe(df, use_container_width=True)
 
@@ -656,161 +371,13 @@ with tab_chango:
 
 
 # ============================================
-# 🧩 Utilidades comunes (necesarias para Coto)
-# ============================================
-from urllib.parse import urljoin
-import requests
-
-def coerce_first(x):
-    return (x[0] if isinstance(x, list) and x else x)
-
-def find_key_recursive(obj, key):
-    if isinstance(obj, dict):
-        if key in obj:
-            return obj[key]
-        for v in obj.values():
-            r = find_key_recursive(v, key)
-            if r is not None:
-                return r
-    elif isinstance(obj, list):
-        for it in obj:
-            r = find_key_recursive(it, key)
-            if r is not None:
-                return r
-    return None
-
-def iter_records(node):
-    if isinstance(node, dict):
-        if any(k in node for k in ("record.id", "product.repositoryId", "product.displayName", "product.eanPrincipal")):
-            yield node
-        for v in node.values():
-            yield from iter_records(v)
-    elif isinstance(node, list):
-        for it in node:
-            yield from iter_records(it)
-
-# ============================================
-# 🏷️ Coto (ListPrice + Oferta texto)
-# Oferta = textoDescuento dentro de product.dtoDescuentos
-# ============================================
-from urllib.parse import urljoin
-import requests
-import json
-import re
-
-# --------------------------------------------
-# Utilidades comunes (necesarias para Coto)
-# --------------------------------------------
-def coerce_first(x):
-    return (x[0] if isinstance(x, list) and x else x)
-
-def find_key_recursive(obj, key):
-    if isinstance(obj, dict):
-        if key in obj:
-            return obj[key]
-        for v in obj.values():
-            r = find_key_recursive(v, key)
-            if r is not None:
-                return r
-    elif isinstance(obj, list):
-        for it in obj:
-            r = find_key_recursive(it, key)
-            if r is not None:
-                return r
-    return None
-
-def iter_records(node):
-    if isinstance(node, dict):
-        if any(k in node for k in ("record.id", "product.repositoryId", "product.displayName", "product.eanPrincipal")):
-            yield node
-        for v in node.values():
-            yield from iter_records(v)
-    elif isinstance(node, list):
-        for it in node:
-            yield from iter_records(it)
-
-def cast_price(val):
-    """Convierte distintos formatos a float. Soporta '1.795,00', '1126.72', '$1126.72c/u', etc."""
-    if val is None:
-        return None
-    if isinstance(val, (int, float)):
-        return float(val)
-
-    s = str(val).strip()
-    if not s:
-        return None
-
-    s = s.replace("c/u", "").replace("c\\u002fu", "")
-    s = re.sub(r"[^\d\.,-]", "", s)  # deja solo dígitos y separadores
-    if not s:
-        return None
-
-    # Caso AR típico: '1.795,00' (miles '.' y decimales ',')
-    if s.count(",") == 1 and s.count(".") >= 1 and s.rfind(",") > s.rfind("."):
-        s = s.replace(".", "").replace(",", ".")
-    # Caso coma decimal sin miles: '649,35'
-    elif s.count(",") == 1 and s.count(".") == 0:
-        s = s.replace(",", ".")
-
-    try:
-        return float(s)
-    except Exception:
-        return None
-
-def format_ar_price_no_thousands(value):
-    """1795.0 -> '1795,00' (sin separador de miles)."""
-    if value is None:
-        return None
-    return f"{float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", "")
-
-def extract_texto_descuento_from_dto_descuentos(dto_descuentos) -> str:
-    """
-    product.dtoDescuentos suele venir como:
-      ["[{\"textoDescuento\":\"70% 2da\", ...}]"]
-    Devuelve textoDescuento (string) o "" si no encuentra / viene vacío.
-    """
-    if dto_descuentos is None:
-        return ""
-
-    chunks = dto_descuentos if isinstance(dto_descuentos, list) else [dto_descuentos]
-
-    for ch in chunks:
-        if ch is None:
-            continue
-        s = str(ch).strip()
-        if not s:
-            continue
-
-        try:
-            promos = json.loads(s)
-        except Exception:
-            continue
-
-        if isinstance(promos, dict):
-            promos = [promos]
-
-        if isinstance(promos, list):
-            for p in promos:
-                if not isinstance(p, dict):
-                    continue
-                txt = (p.get("textoDescuento") or "").strip()
-                # ✅ pedido: si está vacío, devolver vacío (no "Revisar")
-                if txt != "":
-                    return txt
-
-    return ""
-
-
-# ============================================
-# 🏷️ TAB COTO
+# 🏷️ Coto
 # ============================================
 with tab_coto:
     st.subheader("Coto · Relevamiento por EAN")
-    st.caption("Flujo: búsqueda → record.id → detalle (json) → ListPrice=sku.activePrice | Oferta=textoDescuento (si vacío, vacío)")
+    st.caption("Flujo: búsqueda (Ntk=product.eanPrincipal) → record.id → detalle (format=json) → sku.activePrice")
 
-    # Datos de entrada (Coto)
-    from listado_coto import productos  # {"Nombre": {"empresa": "...", "categoría": "...", "subcategoría": "...", "marca": "...", "ean": "..."}}
-
+    # Constantes / headers Coto
     BASE = "https://www.cotodigital.com.ar"
     SEARCH_CATEGORIA = "/sitios/cdigi/categoria"
     DEFAULT_SUCURSAL = "200"
@@ -823,7 +390,6 @@ with tab_coto:
 
     suc = st.text_input("idSucursal (Coto)", value=DEFAULT_SUCURSAL, help="Se aplica a búsqueda y detalle.")
     show_debug = st.checkbox("Mostrar URLs de detalle (debug)", value=False)
-    show_diag = st.checkbox("Mostrar diagnóstico de items/EAN", value=True)
 
     def get_record_id_by_ean(session: requests.Session, ean: str, sucursal: str):
         params = {"Dy": "1", "Ntt": ean, "Ntk": "product.eanPrincipal", "idSucursal": sucursal, "format": "json"}
@@ -834,40 +400,51 @@ with tab_coto:
         for rec in iter_records(data):
             e = coerce_first(find_key_recursive(rec, "product.eanPrincipal"))
             if str(e) == str(ean):
-                rid = coerce_first(find_key_recursive(rec, "record.id"))
-                name = (
-                    coerce_first(find_key_recursive(rec, "product.displayName"))
-                    or coerce_first(find_key_recursive(rec, "record.title"))
-                )
+                rid  = coerce_first(find_key_recursive(rec, "record.id"))
+                name = coerce_first(find_key_recursive(rec, "product.displayName")) \
+                       or coerce_first(find_key_recursive(rec, "record.title"))
                 return rid, (str(name) if name else None)
         return None, None
+
+    def cast_price(val):
+        if val is None:
+            return None
+        if isinstance(val, (int, float)):
+            return float(val)
+        s = str(val).strip()
+        if s.count(",") == 1 and s.count(".") > 1:  # '1.795,00' -> 1795.00
+            s = s.replace(".", "").replace(",", ".")
+        try:
+            return float(s)
+        except Exception:
+            return None
 
     def fetch_detail_by_record_id(session: requests.Session, record_id: str, sucursal: str):
         product_url = f"{BASE}/sitios/cdigi/productos/_/R-{record_id}"
         detail_url = f"{product_url}?Dy=1&idSucursal={sucursal}&format=json"
 
         headers = dict(session.headers)
-        headers["Referer"] = product_url
+        headers["Referer"] = product_url  # ayuda en algunos entornos
         r = session.get(detail_url, headers=headers, timeout=20)
         r.raise_for_status()
         data = r.json()
 
-        ean = coerce_first(find_key_recursive(data, "product.eanPrincipal"))
-        name = coerce_first(find_key_recursive(data, "product.displayName"))
+        ean   = coerce_first(find_key_recursive(data, "product.eanPrincipal"))
+        name  = coerce_first(find_key_recursive(data, "product.displayName"))
+        raw   = coerce_first(find_key_recursive(data, "sku.activePrice"))
 
-        # ListPrice = sku.activePrice
-        raw_list = coerce_first(find_key_recursive(data, "sku.activePrice"))
-        list_price = cast_price(raw_list)
-
-        # ✅ Oferta = textoDescuento dentro de product.dtoDescuentos (si vacío, "")
-        dto_desc = coerce_first(find_key_recursive(data, "product.dtoDescuentos"))
-        oferta_txt = extract_texto_descuento_from_dto_descuentos(dto_desc)
+        price = cast_price(raw)
+        if price is None:
+            for alt in ("activePrice","sku.price","sku.listPrice","price","listPrice"):
+                raw_alt = coerce_first(find_key_recursive(data, alt))
+                price = cast_price(raw_alt)
+                if price is not None:
+                    break
 
         return {
             "ean": ean,
             "name": name,
-            "list_price": format_ar_price_no_thousands(list_price) if list_price is not None else None,
-            "oferta": oferta_txt,  # string, puede ser ""
+            "price": format_ar_price_no_thousands(price),
             "detail_url": detail_url,
         }
 
@@ -881,46 +458,24 @@ with tab_coto:
         prog = st.progress(0, text="Procesando…")
         done = 0
 
-        for it in items:
-            nombre_ref = str(it.get("nombre_ref", "")).strip()
-            ean = str(it.get("ean", "")).strip()
-
-            empresa = str(it.get("empresa", "") or "").strip()
-            categoria = str(it.get("categoría", "") or "").strip()
-            subcategoria = str(it.get("subcategoría", "") or "").strip()
-            marca = str(it.get("marca", "") or "").strip()
-
-            row = {
-                "Empresa": empresa,
-                "Categoría": categoria,
-                "Subcategoría": subcategoria,
-                "Marca": marca,
-                "Nombre": nombre_ref,
-                "EAN": ean,
-                "ListPrice": "Revisar",
-                "Oferta": "Revisar",
-            }
+        for nombre_ref, ean in items:
+            ean = str(ean).strip()
+            nombre_ref = str(nombre_ref).strip()
+            row = {"EAN": ean, "Nombre del Producto": nombre_ref, "Precio": "Revisar"}  # default pedido
 
             try:
-                if ean:
-                    record_id, name_hint = get_record_id_by_ean(s, ean, sucursal)
-                    if record_id:
-                        det = fetch_detail_by_record_id(s, record_id, sucursal)
-
-                        row["EAN"] = det.get("ean") or ean
-                        row["Nombre"] = det.get("name") or name_hint or nombre_ref
-
-                        if det.get("list_price") is not None:
-                            row["ListPrice"] = det.get("list_price")
-
-                        # ✅ Oferta: si viene "", debe quedar ""
-                        if det.get("oferta") is not None:
-                            row["Oferta"] = det.get("oferta")
-
-                        if return_debug:
-                            debug_rows.append({"EAN": row["EAN"], "detail_url": det.get("detail_url")})
+                record_id, name_hint = get_record_id_by_ean(s, ean, sucursal)
+                if record_id:
+                    det = fetch_detail_by_record_id(s, record_id, sucursal)
+                    row["EAN"] = det.get("ean") or ean
+                    row["Nombre del Producto"] = det.get("name") or name_hint or nombre_ref
+                    if det.get("price") is not None:
+                        row["Precio"] = det.get("price")
+                    if return_debug:
+                        debug_rows.append({"EAN": row["EAN"], "detail_url": det.get("detail_url")})
+                # si no hay record_id, dejamos "Revisar" y nombre_ref tal cual
             except Exception:
-                pass
+                pass  # dejamos "Revisar"
 
             out.append(row)
             done += 1
@@ -929,85 +484,32 @@ with tab_coto:
         return (out, debug_rows) if return_debug else (out, None)
 
     if st.button("⚡ Ejecutar relevamiento (Coto)"):
+        # Construimos [(nombre_ref, ean), ...]
         items = []
         for nombre, meta in productos.items():
-            meta = meta or {}
-            items.append({
-                "nombre_ref": nombre,
-                "ean": str(meta.get("ean", "")).strip(),
-                "empresa": meta.get("empresa", ""),
-                "categoría": meta.get("categoría", ""),
-                "subcategoría": meta.get("subcategoría", ""),
-                "marca": meta.get("marca", ""),
-            })
-
-        if show_diag:
-            total_items = len(items)
-            with_ean = sum(1 for it in items if str(it.get("ean", "")).strip())
-            st.write("Diagnóstico")
-            st.write("Total items:", total_items)
-            st.write("Items con EAN no vacío:", with_ean)
-            st.write("Ejemplo item:", items[0] if items else None)
+            ean = str(meta.get("ean", "")).strip()
+            if ean:
+                items.append((nombre, ean))
 
         if not items:
-            st.warning("No hay items válidos en listado_coto.py")
-            st.stop()
+            st.warning("No hay EANs válidos en productos_streamlit.py")
+        else:
+            rows, dbg = scrape_coto_by_items(items, sucursal=(suc or DEFAULT_SUCURSAL), return_debug=show_debug)
+            df = pd.DataFrame(rows, columns=["EAN", "Nombre del Producto", "Precio"])
+            st.success("✅ Relevamiento Coto completado")
+            st.dataframe(df, use_container_width=True)
 
-        # -------------------------
-        # PREFLIGHT (1 EAN)
-        # -------------------------
-        try:
-            test = next((it for it in items if str(it.get("ean", "")).strip()), None)
-            if not test:
-                st.warning("No hay EANs no vacíos para preflight.")
-                st.stop()
+            if show_debug and dbg:
+                with st.expander("Debug: detalle de URLs llamadas"):
+                    st.dataframe(pd.DataFrame(dbg), use_container_width=True)
 
-            st.write("Preflight")
-            st.write("EAN:", test["ean"])
-            st.write("Sucursal:", (suc or DEFAULT_SUCURSAL))
-
-            sess = requests.Session()
-            sess.headers.update(HEADERS_COTO)
-
-            rid, nh = get_record_id_by_ean(sess, test["ean"], (suc or DEFAULT_SUCURSAL))
-            st.write("record_id:", rid)
-            st.write("name_hint:", nh)
-
-            if rid:
-                det = fetch_detail_by_record_id(sess, rid, (suc or DEFAULT_SUCURSAL))
-                st.write("Preflight ListPrice:", det.get("list_price"))
-                st.write("Preflight Oferta (textoDescuento):", det.get("oferta"))
-            else:
-                st.warning("Preflight: no se encontró record_id para este EAN.")
-        except Exception as ex:
-            st.error(f"Preflight error: {type(ex).__name__} -> {ex}")
-            st.stop()
-
-        # Relevamiento completo
-        rows, dbg = scrape_coto_by_items(items, sucursal=(suc or DEFAULT_SUCURSAL), return_debug=show_debug)
-
-        df = pd.DataFrame(
-            rows,
-            columns=["Empresa", "Categoría", "Subcategoría", "Marca", "Nombre", "EAN", "ListPrice", "Oferta"]
-        )
-
-        st.success("✅ Relevamiento Coto completado")
-        st.dataframe(df, use_container_width=True)
-
-        if show_debug and dbg:
-            with st.expander("Debug: detalle de URLs llamadas"):
-                st.dataframe(pd.DataFrame(dbg), use_container_width=True)
-
-        fecha = datetime.now().strftime("%Y-%m-%d")
-        st.download_button(
-            "⬇ Descargar CSV (Coto)",
-            df.to_csv(index=False).encode("utf-8"),
-            file_name=f"precios_coto_{fecha}.csv",
-            mime="text/csv",
-        )
-
-
-
+            fecha = datetime.now().strftime("%Y-%m-%d")
+            st.download_button(
+                "⬇ Descargar CSV (Coto)",
+                df.to_csv(index=False).encode("utf-8"),
+                file_name=f"precios_coto_{fecha}.csv",
+                mime="text/csv",
+            )
 # ============================================
 # 🟢 Jumbo
 # ============================================
@@ -1172,113 +674,53 @@ with tab_vea:
                 mime="text/csv",
             )
 # ============================================
-# 🟡 Cooperativa Obrera (ListPrice + Price)
+# 🟡 Cooperativa Obrera
 # ============================================
 with tab_coope:
     st.subheader("Cooperativa Obrera · Relevamiento por cod_coope")
-    st.caption("Consulta el endpoint oficial y devuelve **ListPrice (precio_anterior)** y **Price (precio)**.")
-
-    import requests
-    import pandas as pd
-    from datetime import datetime
-
-    # ✅ nuevo origen del listado
-    # listado_cooperativa.py debe exponer un dict (ej: productos = {...})
-    from listado_cooperativa import productos
+    st.caption("Consulta el endpoint oficial y toma **precio de lista**.")
 
     HEADERS_COOPE = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "application/json,text/plain,*/*",
     }
 
-    def _is_no_encontrado(cod: str) -> bool:
-        """
-        Normaliza casos tipo: 'NO_ENCONTRADO', 'no_encontrado ', 'No Encontrado', etc.
-        """
-        c = (cod or "").strip().upper()
-        c = c.replace(" ", "_")
-        return c == "NO_ENCONTRADO" or c == "NO" or c == "NO_ENCONTRADO,"  # tolerancia
-
-    def _to_float(x):
-        try:
-            if x in (None, ""):
-                return 0.0
-            return float(str(x))
-        except Exception:
-            return 0.0
-
     if st.button("🟡 Ejecutar relevamiento (Cooperativa Obrera)"):
         with st.spinner("⏳ Relevando Cooperativa Obrera..."):
             resultados = []
+            for nombre, datos in productos.items():
+                ean = str(datos.get("ean", "")).strip()
+                cod = str(datos.get("cod_coope", "")).strip()
 
-            for nombre, meta in productos.items():
-                empresa = str(meta.get("empresa", "")).strip()
-                categoria = str(meta.get("categoría", "")).strip()
-                subcategoria = str(meta.get("subcategoría", "")).strip()
-                marca = str(meta.get("marca", "")).strip()
-                ean = str(meta.get("ean", "")).strip()
-
-                # ✅ soporta ambas llaves por robustez (cod_coope / cod_coop)
-                cod = str(meta.get("cod_coope", meta.get("cod_coop", ""))).strip()
-
-                # ✅ fila base requerida
-                row = {
-                    "Empresa": empresa,
-                    "Categoría": categoria,
-                    "Subcategoría": subcategoria,
-                    "Marca": marca,
-                    "Nombre": nombre,
-                    "EAN": ean,
-                    "ListPrice": "Revisar",  # precio_anterior
-                    "Price": "Revisar",      # precio
-                }
-
-                # ✅ Regla: si NO_ENCONTRADO -> Revisar
-                if (not cod) or _is_no_encontrado(cod):
+                row = {"EAN": ean, "Nombre": nombre, "Precio": "Revisar"}
+                if not cod:
                     resultados.append(row)
                     continue
 
                 try:
-                    url = "https://api.lacoopeencasa.coop/api/articulo/detalle"
-                    params = {"cod_interno": cod, "simple": "false"}
-
-                    r = requests.get(url, params=params, headers=HEADERS_COOPE, timeout=12)
+                    url = f"https://api.lacoopeencasa.coop/api/articulo/detalle?cod_interno={cod}&simple=false"
+                    r = requests.get(url, headers=HEADERS_COOPE, timeout=12)
                     r.raise_for_status()
-
-                    ctype = (r.headers.get("content-type", "") or "").lower()
-                    j = r.json() if ctype.startswith("application/json") else {}
+                    j = r.json() if r.headers.get("content-type","").startswith("application/json") else {}
 
                     datos_node = (j or {}).get("datos") or {}
+                    precio_ant = datos_node.get("precio_anterior")
 
-                    # ✅ ListPrice = precio_anterior
-                    lp_raw = datos_node.get("precio_anterior")
-                    # ✅ Price = precio
-                    pr_raw = datos_node.get("precio")
+                    # precio_anterior viene como string ("919.00")
+                    val = float(precio_ant) if precio_ant not in (None, "") else 0.0
 
-                    lp = _to_float(lp_raw)
-                    pr = _to_float(pr_raw)
-
-                    # Si vienen válidos, los mostramos formateados
-                    if lp > 0:
-                        row["ListPrice"] = format_ar_price_no_thousands(lp)
-                    if pr > 0:
-                        row["Price"] = format_ar_price_no_thousands(pr)
+                    if val > 0:
+                        row["Precio"] = format_ar_price_no_thousands(val)
 
                 except Exception:
-                    # Si falla, se queda en "Revisar"
-                    pass
+                    pass  # dejamos "Revisar" si falla algo
 
                 resultados.append(row)
 
-            df = pd.DataFrame(
-                resultados,
-                columns=["Empresa", "Categoría", "Subcategoría", "Marca", "Nombre", "EAN", "ListPrice", "Price"],
-            )
-
+            df = pd.DataFrame(resultados, columns=["EAN", "Nombre", "Precio"])
             st.success("✅ Relevamiento Cooperativa Obrera completado")
             st.dataframe(df, use_container_width=True)
 
-            # (Opcional) descarga CSV, lo dejo porque ya estaba en tu flujo
             fecha = datetime.now().strftime("%Y-%m-%d")
             st.download_button(
                 label="⬇ Descargar CSV (Cooperativa Obrera)",
@@ -1286,9 +728,6 @@ with tab_coope:
                 file_name=f"precios_cooperativa_{fecha}.csv",
                 mime="text/csv",
             )
-
-
-
 
 # ============================================
 # 🔴 HiperLibertad (ListPrice por EAN)
@@ -1372,15 +811,6 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
-
-
-
-
-
-
-
-
-
 
 
 
