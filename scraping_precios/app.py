@@ -348,15 +348,22 @@ with tab_dia:
 
     
 # ============================================
-# 🟢 ChangoMás (por RefId)
+# 🟢 ChangoMás (por EAN + Oferta por Checkout)
 # ============================================
 with tab_chango:
-    st.subheader("ChangoMás · Relevamiento por RefId (VTEX)")
-    st.caption("Consulta por **RefId** usando VTEX Search (`alternateIds_RefId`). Early exit + timeouts cortos. Sin SC alternativos.")
+    st.subheader("ChangoMás · Relevamiento por EAN (VTEX + Checkout)")
+    st.caption(
+        "Busca por **EAN** en VTEX Search. "
+        "**ListPrice** sale de `commertialOffer.ListPrice`. "
+        "**Oferta**: si `Price < ListPrice` muestra `% off`; si no, detecta mecánicas (2da al %, 3x2, 4x2, 3x6) vía Checkout."
+    )
+
+    # Datos de entrada (ChangoMás)
+    from listado_chango import productos  # {"Nombre": {"empresa": "...", "categoría": "...", "subcategoría": "...", "marca": "...", "ean": "..."}}
 
     # Parámetros
     DEFAULT_SEGMENT = (
-        "eyJjYW1wYWlnbnMiOm51bGwsImNoYW5uZWwiOiIxIiwicHJpY2VUYWJsZXMiOm51bGwsInJlZ2lvbklkIjoidjIuNDdERkY5REI3QkE5NEEyMEI1ODRGRjYzQTA3RUIxQ0EiLCJ1dG1fY2FtcGFpZ24iOm51bGwsInV0bV9zb3VyY2UiOm51bGwsInV0bWlfY2FtcGFpZ24iOm51bGwsImN1cnJlbmN5Q29kZSI6IkFSUyIsImN1cnJlbmN5U3ltYm9sIjoiJCIsImNvdW50cnlDb2RlIjoiQVJHIiwiY3VsdHVyZUluZm8iOiJlcy1BUiIsImFkbWluX2N1bHR1cmVJbmZvIjoiZXMtQVIiLCJjaGFubmVsUHJpdmFjeSI6InB1YmxpYyJ9"
+        "eyJjYW1wYWlnbnMiOm51bGwsImNoYW5uZWwiOiIxIiwicHJpY2VUYWJsZXMiOm51bGwsInJlZ2lvbklkIjoidjIuNDdERkY5REI3QkE5NEEyMEI1ODRGRjYzQTA3RUIxQ0EiLCJ1dG1fY2FtcGFpZ24iOm51bGwsInV0bV9zb3VyY2UiOm51bGwsInV0bWlfY2FtcGFpZ24iOm51bGwsImN1cnJlbmN5Q29kZSI6IkFSUyIsImN1cnJlbmN5U3ltYm9sIjoiJCIsImNvdW50cnlDb2RlIjoiQVJHIiwiY3VsdHVyZUluZm8iOiJlcy1BUiIsImNoYW5uZWxQcml2YWN5IjoicHVibGljIn0"
     )
     vtex_segment = st.text_input("vtex_segment (ChangoMás)", value=DEFAULT_SEGMENT, type="password")
     sc_primary = st.text_input("Sales channel (sc)", value="1", help="Canal de ventas VTEX, ej: 1")
@@ -364,56 +371,133 @@ with tab_chango:
 
     # Constantes
     BASE_CM = "https://www.masonline.com.ar"
-    TIMEOUTS = (3, 7)  # (connect, read)
+    TIMEOUTS = (3, 20)  # (connect, read)
 
-    def first_listprice_or_price(item: dict) -> float:
-        best_price = 0.0
-        for seller in (item.get("sellers") or []):
-            co = seller.get("commertialOffer") or {}
-            lp = float(co.get("ListPrice") or 0)
-            if lp > 0:
-                return lp  # 🎯 early exit
-            p = float(co.get("Price") or 0)
-            if p > best_price:
-                best_price = p
-        return best_price
+    def compute_percent_off(list_price: float, price: float):
+        """Devuelve % off entero si price < list_price."""
+        try:
+            if list_price > 0 and price > 0 and price < list_price:
+                pct = round((1 - (price / list_price)) * 100)
+                return int(pct) if pct > 0 else None
+        except Exception:
+            pass
+        return None
 
-    def vt_search_by_refid(session: requests.Session, refid: str, sc: str, headers: dict):
+    def simplify_offer_text(text: str) -> str:
+        """
+        Resume texto de promo:
+        - NxM (3x2, 4x2, 3x6) -> '3x2'
+        - '2da/2do al XX%' -> '2da al 50%'
+        - fallback -> texto completo
+        """
+        import re
+        if not text:
+            return ""
+
+        m = re.search(r"\b(\d+\s*x\s*\d+)\b", text, flags=re.IGNORECASE)
+        if m:
+            return m.group(1).replace(" ", "")
+
+        m2 = re.search(r"\b(2da|2do)\b.*?\b(al)\b.*?(\d{1,3}\s*%)", text, flags=re.IGNORECASE)
+        if m2:
+            frag = m2.group(0)
+            frag = re.split(r"\b(Reg|SURTIDO|NACIONAL|Max|LLEVANDO)\b", frag, flags=re.IGNORECASE)[0]
+            return " ".join(frag.split()).strip()
+
+        return text.strip()
+
+    def vt_search_by_ean(session: requests.Session, ean: str, sc: str, headers: dict):
         url = f"{BASE_CM}/api/catalog_system/pub/products/search"
-        params = {"fq": f"alternateIds_RefId:{refid}", "sc": sc}
+
+        # 1) alternateIds_Ean
+        params = {"fq": f"alternateIds_Ean:{ean}", "sc": sc}
         r = session.get(url, headers=headers, params=params, timeout=TIMEOUTS)
         if show_debug_cm:
-            st.text(f"SEARCH {sc}: {r.url} | {r.status_code} | {r.headers.get('content-type')}")
+            st.text(f"SEARCH altEan: {r.url} | {r.status_code}")
         r.raise_for_status()
         data = r.json()
-        if not data:
-            return None, None
-        prod = data[0]
-        items = prod.get("items", []) or []
-        return prod, items
+        if data:
+            return data, r.url
 
-    def vt_variations_price(session: requests.Session, product_id: str, refid: str, sc: str, headers: dict):
-        url = f"{BASE_CM}/api/catalog_system/pub/products/variations/{product_id}"
-        params = {"sc": sc}
+        # 2) fallback ean
+        params = {"fq": f"ean:{ean}", "sc": sc}
         r = session.get(url, headers=headers, params=params, timeout=TIMEOUTS)
         if show_debug_cm:
-            st.text(f"VARIATIONS {sc}: {r.url} | {r.status_code}")
+            st.text(f"SEARCH ean: {r.url} | {r.status_code}")
         r.raise_for_status()
-        data = r.json()
-        name = data.get("name")
-        for sku in (data.get("skus") or []):
-            refids = [str(x.get("Value")) for x in (sku.get("referenceId") or []) if isinstance(x, dict)]
-            if str(refid) in refids or not refids:
-                lp = float(sku.get("listPrice") or 0)
-                if lp > 0:
-                    return name, lp
-                bp = float(sku.get("bestPrice") or 0)
-                return name, (bp if bp > 0 else None)
-        return name, None
+        return r.json(), r.url
 
-    st.markdown(f"**Productos cargados:** {len(productos)} (se espera `cod_maso` en cada ítem)")
+    def pick_item_by_ean(items: list, ean: str):
+        ean = str(ean).strip()
+        for it in items or []:
+            if str(it.get("ean") or "").strip() == ean:
+                return it
+            for ref in (it.get("referenceId") or []):
+                if str(ref.get("Value") or "").strip() == ean:
+                    return it
+        return items[0] if items else None
 
-    if st.button("🟢 Ejecutar relevamiento (ChangoMás por RefId)"):
+    # ----------------------------
+    # Checkout (para mecánicas)
+    # ----------------------------
+    def create_orderform(session: requests.Session, headers: dict):
+        url = f"{BASE_CM}/api/checkout/pub/orderForm"
+        r = session.post(url, headers=headers, json={}, timeout=TIMEOUTS)
+        if show_debug_cm:
+            st.text(f"ORDERFORM create: {r.status_code}")
+        r.raise_for_status()
+        return r.json()
+
+    def add_items_to_orderform(session: requests.Session, orderform_id: str, sku_id: str, seller_id: str, qty: int, headers: dict):
+        url = f"{BASE_CM}/api/checkout/pub/orderForm/{orderform_id}/items"
+        payload = {"orderItems": [{"id": str(sku_id), "quantity": int(qty), "seller": str(seller_id)}]}
+        r = session.post(url, headers=headers, json=payload, timeout=TIMEOUTS)
+        if show_debug_cm:
+            st.text(f"ORDERFORM add qty={qty}: {r.status_code}")
+        r.raise_for_status()
+        return r.json()
+
+    def extract_promos(of: dict):
+        rbd = (of.get("ratesAndBenefitsData") or {})
+        ids = rbd.get("rateAndBenefitsIdentifiers") or []
+        names = []
+        for x in ids:
+            if isinstance(x, dict):
+                n = x.get("name") or x.get("id") or x.get("description")
+                if n:
+                    names.append(str(n).strip())
+
+        # dedupe
+        out, seen = [], set()
+        for n in names:
+            if n not in seen:
+                out.append(n)
+                seen.add(n)
+        return out
+
+    def detect_offer_via_checkout(session: requests.Session, sku_id: str, seller_id: str, headers: dict, quantities=(2, 3, 4, 6)):
+        of0 = create_orderform(session, headers=headers)
+        of_id = of0.get("orderFormId")
+        if not of_id:
+            return ""
+
+        for qty in quantities:
+            of = add_items_to_orderform(session, of_id, sku_id, seller_id, qty, headers=headers)
+            promos = extract_promos(of)
+            if promos:
+                simplified = [simplify_offer_text(p) for p in promos]
+                out, seen = [], set()
+                for s in simplified:
+                    if s and s not in seen:
+                        out.append(s)
+                        seen.add(s)
+                return " | ".join(out)
+
+        return ""
+
+    st.markdown(f"**Productos cargados:** {len(productos)} (se espera `ean` en cada ítem)")
+
+    if st.button("🟢 Ejecutar relevamiento (ChangoMás por EAN)"):
         with st.spinner("⏳ Relevando ChangoMás..."):
             s = requests.Session()
             headers_cm = {
@@ -427,65 +511,102 @@ with tab_chango:
             prog = st.progress(0, text="Procesando…")
             done = 0
 
-            for nombre, datos in productos.items():
-                refid = str(datos.get("cod_maso", "")).strip()  # ⚠️ clave esperada
-                ean   = str(datos.get("ean", "")).strip()
-                if not refid:
-                    resultados.append({"EAN": ean, "RefId": "", "Nombre": nombre, "Precio": "Revisar"})
-                    done += 1
-                    prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
-                    continue
+            sc = sc_primary.strip() or "1"
 
-                row = {"EAN": ean, "RefId": refid, "Nombre": nombre, "Precio": "Revisar"}
+            for nombre_base, datos in productos.items():
+                # Metadatos
+                empresa = (datos.get("empresa") or "").strip()
+                categoria = (datos.get("categoría") or "").strip()
+                subcategoria = (datos.get("subcategoría") or "").strip()
+                marca = (datos.get("marca") or "").strip()
+
+                ean = str(datos.get("ean") or "").strip()
+
+                row = {
+                    "Empresa": empresa,
+                    "Categoría": categoria,
+                    "Subcategoría": subcategoria,
+                    "Marca": marca,
+                    "Nombre": nombre_base,
+                    "EAN": ean,
+                    "ListPrice": "Sin Precio",
+                    "Oferta": "",
+                }
+
                 try:
-                    found_price = None
-                    found_name = None
+                    if not ean:
+                        resultados.append(row)
+                        done += 1
+                        prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
+                        continue
 
-                    prod, items = vt_search_by_refid(s, refid, sc_primary.strip(), headers_cm)
-                    if prod and items:
-                        # Item cuyo RefId coincida; si no, el primero
-                        item_sel = None
-                        for it in items:
-                            for rfi in (it.get("referenceId") or []):
-                                if str(rfi.get("Value", "")).strip() == refid:
-                                    item_sel = it
-                                    break
-                            if item_sel:
-                                break
-                        if not item_sel and items:
-                            item_sel = items[0]
+                    data, used_url = vt_search_by_ean(s, ean, sc, headers_cm)
+                    if not data:
+                        resultados.append(row)
+                        done += 1
+                        prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
+                        continue
 
-                        price_num = first_listprice_or_price(item_sel) if item_sel else 0.0
-                        found_name = prod.get("productName") or nombre
+                    prod = data[0]
+                    items = prod.get("items") or []
+                    item_sel = pick_item_by_ean(items, ean)
 
-                        if price_num <= 0:
-                            pid = str(prod.get("productId") or "").strip()
-                            if pid:
-                                v_name, v_price = vt_variations_price(s, pid, refid, sc_primary.strip(), headers_cm)
-                                if v_price:
-                                    price_num = v_price
-                                    found_name = v_name or found_name
+                    if not item_sel or not item_sel.get("sellers"):
+                        resultados.append(row)
+                        done += 1
+                        prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
+                        continue
 
-                        if price_num > 0:
-                            found_price = price_num
+                    # Nombre: preferimos API
+                    nombre_api = (prod.get("productName") or "").strip()
+                    row["Nombre"] = nombre_api if nombre_api else nombre_base
 
-                    if found_price is not None:
-                        # 👇 Nuevo: si el precio supera 1.000.000, marcar "Revisar"
-                        if float(found_price) > 1_000_000:
-                            row["Precio"] = "Revisar"
-                            row["Nombre"] = found_name or nombre
-                        else:
-                            row["Precio"] = format_ar_price_no_thousands(found_price)
-                            row["Nombre"] = found_name or nombre
+                    seller0 = (item_sel.get("sellers") or [{}])[0]
+                    seller_id = str(seller0.get("sellerId") or "1").strip() or "1"
+                    co = seller0.get("commertialOffer") or {}
+
+                    list_price = float(co.get("ListPrice") or 0)
+                    price = float(co.get("Price") or 0)
+
+                    # ListPrice (columna pedida)
+                    if list_price > 0:
+                        row["ListPrice"] = format_ar_price_no_thousands(list_price)
+                    else:
+                        row["ListPrice"] = "Sin Precio"
+
+                    # 1) Oferta por descuento unitario (% off) si Price < ListPrice
+                    pct = compute_percent_off(list_price, price)
+                    if pct:
+                        row["Oferta"] = f"{pct}% off"
+                    else:
+                        # 2) Oferta por mecánicas (checkout) si no hay % off
+                        #    probamos qty=2,3,4,6 (2da al %, 3x2, 4x2, 3x6)
+                        sku_id = str(item_sel.get("itemId") or "").strip()
+                        if sku_id:
+                            row["Oferta"] = detect_offer_via_checkout(
+                                s,
+                                sku_id=sku_id,
+                                seller_id=seller_id,
+                                headers=headers_cm,
+                                quantities=(2, 3, 4, 6),
+                            )
+
+                    if show_debug_cm:
+                        st.text(f"OK {ean} | {used_url}")
 
                 except Exception:
-                    pass  # dejamos "Revisar"
+                    # dejamos ListPrice = Sin Precio, Oferta vacío
+                    pass
 
                 resultados.append(row)
                 done += 1
                 prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
 
-            df = pd.DataFrame(resultados, columns=["EAN", "RefId", "Nombre", "Precio"])
+            df = pd.DataFrame(
+                resultados,
+                columns=["Empresa", "Categoría", "Subcategoría", "Marca", "Nombre", "EAN", "ListPrice", "Oferta"]
+            )
+
             st.success("✅ Relevamiento ChangoMás completado")
             st.dataframe(df, use_container_width=True)
 
@@ -1215,6 +1336,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
