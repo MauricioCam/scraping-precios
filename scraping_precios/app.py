@@ -1046,76 +1046,262 @@ with tab_coto:
 
 
 # ============================================
-# 🟢 Jumbo
+# 🟢 Jumbo (Cencosud / VTEX) — ListPrice + Oferta (search-promotions)
 # ============================================
 with tab_jumbo:
-    st.subheader("Jumbo · Relevamiento por EAN (VTEX)")
-    st.caption("Consulta por **EAN** y toma **Installments[].Value** del primer item/seller. Sin cookie.")
+    st.subheader("Jumbo · Relevamiento por EAN (VTEX + search-promotions)")
+    st.caption(
+        "1) Catálogo VTEX por **EAN** (`alternateIds_Ean`) → toma **ListPrice** (si existe). "
+        "2) Si no hay descuento unitario confiable, consulta **/_v/search-promotions** (POST) y toma `code`/`name` como **Oferta**. "
+        "Seller fijo: `jumboargentinaj5202martinez`."
+    )
+
+    # Datos de entrada (Cencosud: Jumbo/Vea, etc.)
+    from listado_cencosud import productos  # {"Nombre": {"empresa": "...", "categoría": "...", "subcategoría": "...", "marca": "...", "ean": "..."}}
+
+    # Parámetros Jumbo (los dejamos visibles para mantenerlo configurable si algún día cambia)
+    BASE_JUMBO = "https://www.jumbo.com.ar"
+    DEFAULT_SC = "32"  # en tu caso, channel=32 (segment)
+    DEFAULT_SELLER = "jumboargentinaj5202martinez"
+
+    vtex_segment_jumbo = st.text_input("vtex_segment (Jumbo)", value=VTEX_SEGMENT if "VTEX_SEGMENT" in globals() else "", type="password")
+    sc_jumbo = st.text_input("Sales channel (sc) Jumbo", value=DEFAULT_SC)
+    seller_promo = st.text_input("Seller promotions (Jumbo)", value=DEFAULT_SELLER)
+    show_debug_jumbo = st.checkbox("Mostrar debug (Jumbo)", value=False)
+
+    TIMEOUTS = (4, 18)
 
     HEADERS_JUMBO = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "application/json,text/plain,*/*",
+        # Cookie vtex_segment es clave para contexto
+        "Cookie": f"vtex_segment={vtex_segment_jumbo}" if vtex_segment_jumbo else "",
     }
 
-    if st.button("Ejecutar relevamiento (Jumbo)"):
+    # ✅ Cache de promos por EAN + sc + seller + segment (solo search-promotions)
+    if "jumbo_promos_cache" not in st.session_state:
+        st.session_state["jumbo_promos_cache"] = {}  # {(ean, sc, seller, segment): oferta_str}
+
+    if st.button("🧹 Limpiar cache de ofertas (Jumbo)"):
+        st.session_state["jumbo_promos_cache"] = {}
+        st.success("Cache de search-promotions limpiada.")
+
+    def listprice_is_suspicious(list_price: float, price: float) -> bool:
+        """Heurística conservadora para evitar listPrice corrupto (ej: 173554 vs 2100)."""
+        try:
+            return (list_price > 0 and price > 0 and list_price > (10 * price))
+        except Exception:
+            return False
+
+    def compute_percent_off(list_price: float, price: float):
+        """Devuelve % off entero si price < list_price."""
+        try:
+            if list_price > 0 and price > 0 and price < list_price:
+                pct = round((1 - (price / list_price)) * 100)
+                return int(pct) if pct > 0 else None
+        except Exception:
+            pass
+        return None
+
+    def vt_search_by_ean(session: requests.Session, ean: str, sc: str):
+        """Busca producto por EAN en VTEX catalog_system (alternateIds_Ean y fallback ean)."""
+        url = f"{BASE_JUMBO}/api/catalog_system/pub/products/search"
+
+        params = {"fq": f"alternateIds_Ean:{ean}"}
+        if sc:
+            params["sc"] = sc
+
+        r = session.get(url, headers=HEADERS_JUMBO, params=params, timeout=TIMEOUTS)
+        if show_debug_jumbo:
+            st.text(f"CATALOG altEan: {r.url} | {r.status_code}")
+        r.raise_for_status()
+        data = r.json()
+
+        if not data:
+            params = {"fq": f"ean:{ean}"}
+            if sc:
+                params["sc"] = sc
+            r = session.get(url, headers=HEADERS_JUMBO, params=params, timeout=TIMEOUTS)
+            if show_debug_jumbo:
+                st.text(f"CATALOG ean: {r.url} | {r.status_code}")
+            r.raise_for_status()
+            data = r.json()
+
+        if not data:
+            return None, None, None
+
+        prod = data[0]
+        items = prod.get("items") or []
+
+        # Elegimos item que matchee EAN. Si no, el primero.
+        item_sel = None
+        for it in items:
+            if str(it.get("ean") or "").strip() == str(ean).strip():
+                item_sel = it
+                break
+            for ref in (it.get("referenceId") or []):
+                if str(ref.get("Value") or "").strip() == str(ean).strip():
+                    item_sel = it
+                    break
+            if item_sel:
+                break
+        if not item_sel and items:
+            item_sel = items[0]
+
+        return prod, item_sel, (r.url if hasattr(r, "url") else None)
+
+    def fetch_search_promotions(session: requests.Session, sku_id: str, seller: str, referer: str):
+        """POST /_v/search-promotions con {seller, skus:[skuId]}"""
+        url = f"{BASE_JUMBO}/_v/search-promotions"
+        headers = dict(HEADERS_JUMBO)
+        headers["Content-Type"] = "application/json"
+        headers["Origin"] = BASE_JUMBO
+        headers["Referer"] = referer or (BASE_JUMBO + "/")
+
+        payload = {"seller": str(seller), "skus": [str(sku_id)]}
+        r = session.post(url, headers=headers, data=json.dumps(payload), timeout=TIMEOUTS)
+        if show_debug_jumbo:
+            st.text(f"PROMOS: {url} | {r.status_code} | sku={sku_id}")
+        r.raise_for_status()
+        return r.json()
+
+    def parse_promo(resp_json: dict, sku_id: str) -> str:
+        """Extrae code/name desde promotions.*.promotions[skuId]."""
+        sku_id = str(sku_id)
+        promos_root = (resp_json.get("promotions") or {})
+
+        for bucket in promos_root.values():
+            bucket_promos = (bucket.get("promotions") or {})
+            if sku_id in bucket_promos:
+                p = bucket_promos[sku_id] or {}
+                code = (p.get("code") or "").strip()
+                name = (p.get("name") or "").strip()
+
+                if code:
+                    return code
+                if name:
+                    return name.split("|")[0].strip()
+        return ""
+
+    def get_offer_cached(session: requests.Session, ean: str, sku_id: str, seller: str, sc: str, segment: str, referer: str):
+        cache = st.session_state["jumbo_promos_cache"]
+        key = (str(ean).strip(), str(sc).strip(), str(seller).strip(), str(segment))
+        if key in cache:
+            return cache[key]
+
+        resp = fetch_search_promotions(session, sku_id=sku_id, seller=seller, referer=referer)
+        oferta = parse_promo(resp, sku_id=sku_id)
+        cache[key] = oferta
+        return oferta
+
+    st.markdown(f"**Productos cargados:** {len(productos)} (se espera `ean` en cada ítem)")
+
+    if st.button("🟢 Ejecutar relevamiento (Jumbo)"):
         with st.spinner("⏳ Relevando Jumbo..."):
+            s = requests.Session()
+
             resultados = []
-            for nombre, datos in productos.items():
+            total = len(productos)
+            prog = st.progress(0, text="Procesando…")
+            done = 0
+
+            sc = (sc_jumbo or "").strip()
+
+            for nombre_base, datos in productos.items():
+                # Metadatos del listado
+                empresa = (datos.get("empresa") or "").strip()
+                categoria = (datos.get("categoría") or "").strip()
+                subcategoria = (datos.get("subcategoría") or "").strip()
+                marca = (datos.get("marca") or "").strip()
                 ean = str(datos.get("ean") or "").strip()
+
+                row = {
+                    "Empresa": empresa,
+                    "Categoría": categoria,
+                    "Subcategoría": subcategoria,
+                    "Marca": marca,
+                    "Nombre": nombre_base,
+                    "EAN": ean,
+                    "ListPrice": "Sin Precio",
+                    "Oferta": "",
+                }
+
                 try:
                     if not ean:
-                        resultados.append({"EAN": "", "Nombre": nombre, "Precio": "Revisar"})
+                        resultados.append(row)
+                        done += 1
+                        prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
                         continue
 
-                    # VTEX search por EAN
-                    url = f"https://www.jumbo.com.ar/api/catalog_system/pub/products/search?fq=alternateIds_Ean:{ean}"
-                    r = requests.get(url, headers=HEADERS_JUMBO, timeout=12)
-                    data = r.json()
-
-                    if not data:
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+                    prod, item_sel, used_url = vt_search_by_ean(s, ean, sc=sc)
+                    if not prod or not item_sel or not item_sel.get("sellers"):
+                        resultados.append(row)
+                        done += 1
+                        prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
                         continue
 
-                    prod = data[0]
-                    items = prod.get("items") or []
+                    # Nombre: priorizamos API
+                    nombre_api = (prod.get("productName") or "").strip()
+                    row["Nombre"] = nombre_api if nombre_api else nombre_base
 
-                    # Elegimos el item que matchee el EAN (ean o referenceId.Value). Si no, el primero.
-                    item_sel = None
-                    for it in items:
-                        if str(it.get("ean") or "").strip() == ean:
-                            item_sel = it
-                            break
-                        for ref in (it.get("referenceId") or []):
-                            if str(ref.get("Value") or "").strip() == ean:
-                                item_sel = it
-                                break
-                        if item_sel:
-                            break
-                    if not item_sel and items:
-                        item_sel = items[0]
+                    seller0 = (item_sel.get("sellers") or [{}])[0]
+                    co = seller0.get("commertialOffer") or {}
 
-                    # Obtenemos Installments[].Value del primer seller
-                    installments = []
-                    try:
-                        installments = (item_sel.get("sellers") or [])[0].get("commertialOffer", {}).get("Installments") or []
-                    except Exception:
-                        installments = []
+                    list_price = float(co.get("ListPrice") or 0)
+                    price = float(co.get("Price") or 0)
 
-                    # Tomamos el mayor Value disponible (suele ser 1 cuota, p.ej. American Express)
-                    vals = [float(x.get("Value") or 0) for x in installments if isinstance(x, dict)]
-                    price_val = max(vals) if vals else 0.0
-
-                    if price_val > 0:
-                        precio_formateado = format_ar_price_no_thousands(price_val)
-                        nombre_prod = prod.get("productName") or nombre
-                        resultados.append({"EAN": ean, "Nombre": nombre_prod, "Precio": precio_formateado})
+                    # ListPrice (columna pedida)
+                    if list_price > 0:
+                        row["ListPrice"] = format_ar_price_no_thousands(list_price)
                     else:
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+                        row["ListPrice"] = "Sin Precio"
+
+                    suspicious = listprice_is_suspicious(list_price, price)
+
+                    # Oferta:
+                    oferta = ""
+
+                    # (1) descuento unitario solo si listPrice no es sospechoso
+                    if not suspicious:
+                        pct = compute_percent_off(list_price, price)
+                        if pct:
+                            oferta = f"{pct}% off"
+
+                    # (2) si no hay oferta por % (o listPrice sospechoso), consultar search-promotions
+                    if not oferta:
+                        sku_id = str(item_sel.get("itemId") or "").strip()
+                        link_text = (prod.get("linkText") or "").strip()
+                        referer = f"{BASE_JUMBO}/{link_text}/p" if link_text else f"{BASE_JUMBO}/"
+
+                        if sku_id:
+                            oferta = get_offer_cached(
+                                s,
+                                ean=ean,
+                                sku_id=sku_id,
+                                seller=seller_promo,
+                                sc=sc,
+                                segment=vtex_segment_jumbo,
+                                referer=referer,
+                            )
+
+                    row["Oferta"] = oferta
+
+                    if show_debug_jumbo:
+                        st.text(f"OK {ean} | {used_url} | sku={item_sel.get('itemId')} | oferta='{oferta}'")
 
                 except Exception:
-                    resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
+                    # dejamos ListPrice = Sin Precio, Oferta vacío
+                    pass
 
-            df = pd.DataFrame(resultados, columns=["EAN", "Nombre", "Precio"])
+                resultados.append(row)
+                done += 1
+                prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
+
+            df = pd.DataFrame(
+                resultados,
+                columns=["Empresa", "Categoría", "Subcategoría", "Marca", "Nombre", "EAN", "ListPrice", "Oferta"]
+            )
+
             st.success("✅ Relevamiento Jumbo completado")
             st.dataframe(df, use_container_width=True)
 
@@ -1126,6 +1312,7 @@ with tab_jumbo:
                 file_name=f"precios_jumbo_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 # ============================================
 # 🟢 Vea
@@ -1409,6 +1596,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
