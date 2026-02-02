@@ -1046,14 +1046,17 @@ with tab_coto:
 
 
 # ============================================
-# 🟢 Jumbo (Cencosud / VTEX) — ListPrice + Oferta (search-promotions) [FIXED CONFIG]
+# 🟢 Jumbo (Cencosud / VTEX) — ListPrice + Oferta (unit discount OR search-promotions)
+#   ✅ ListPrice = PriceWithoutDiscount (siempre que exista)
+#   ✅ Oferta = "% off" si Price < PriceWithoutDiscount; si no, /_v/search-promotions
+#   ✅ Ignora commertialOffer.ListPrice (viene en escala errónea en algunos SKUs)
+#   ✅ Cachea SOLO checkout/promotions por EAN (no cambia lógica del scraping)
 # ============================================
 with tab_jumbo:
     st.subheader("Jumbo · Relevamiento por EAN (VTEX + search-promotions)")
     st.caption(
-        "1) Catálogo VTEX por **EAN** (`alternateIds_Ean`) → toma **ListPrice** del primer item/seller. "
-        "2) Si no hay descuento unitario confiable, consulta **/_v/search-promotions** (POST) y toma `code`/`name` como **Oferta**. "
-        "Configuración fija: sc=32, seller=jumboargentinaj5202martinez."
+        "ListPrice = **PriceWithoutDiscount**. "
+        "Oferta = **% off** si hay descuento unitario (Price < PWD); si no, se obtiene desde **/_v/search-promotions**."
     )
 
     # Datos de entrada (Cencosud: Jumbo/Vea, etc.)
@@ -1062,7 +1065,7 @@ with tab_jumbo:
     import json
     import requests
 
-    # 🔒 Config fija (la que validamos)
+    # 🔒 Config fija (validada)
     BASE_JUMBO = "https://www.jumbo.com.ar"
     SC_JUMBO = "32"
     SELLER_PROMO = "jumboargentinaj5202martinez"
@@ -1079,7 +1082,7 @@ with tab_jumbo:
         "Cookie": f"vtex_segment={VTEX_SEGMENT_JUMBO}",
     }
 
-    # ✅ Cache de promos por EAN (solo search-promotions)
+    # ✅ Cache SOLO del endpoint /_v/search-promotions (por EAN)
     if "jumbo_promos_cache" not in st.session_state:
         st.session_state["jumbo_promos_cache"] = {}  # {ean: oferta_str}
 
@@ -1087,17 +1090,30 @@ with tab_jumbo:
         st.session_state["jumbo_promos_cache"] = {}
         st.success("Cache de search-promotions limpiada.")
 
-    def listprice_is_suspicious(list_price: float, price: float) -> bool:
-        """Heurística conservadora para evitar listPrice corrupto (ej: 173554 vs 2100)."""
+    def normalize_money(val):
+        """
+        Jumbo: Price y PriceWithoutDiscount vienen en pesos (float).
+        Aun así, dejamos un normalizador defensivo por si algún caso viene en centavos.
+        """
+        if val is None:
+            return None
         try:
-            return (list_price > 0 and price > 0 and list_price > (10 * price))
+            v = float(val)
         except Exception:
-            return False
+            return None
+        if v <= 0:
+            return None
 
-    def compute_percent_off(list_price: float, price: float):
-        """Devuelve % off entero si price < list_price."""
+        # Heurística defensiva: si parece centavos (muy grande e integer), dividir por 100
+        if v > 10000 and float(v).is_integer():
+            return v / 100
+
+        return v
+
+    def pct_off(price: float, list_price: float):
+        """% off entero si price < list_price."""
         try:
-            if list_price > 0 and price > 0 and price < list_price:
+            if price and list_price and price > 0 and list_price > 0 and price < list_price:
                 pct = round((1 - (price / list_price)) * 100)
                 return int(pct) if pct > 0 else None
         except Exception:
@@ -1131,7 +1147,7 @@ with tab_jumbo:
         prod = data[0]
         items = prod.get("items") or []
 
-        # Elegimos item que matchee EAN. Si no, el primero.
+        # Elegimos item que matchee EAN (ean o referenceId.Value). Si no, el primero.
         item_sel = None
         for it in items:
             if str(it.get("ean") or "").strip() == str(ean).strip():
@@ -1243,24 +1259,24 @@ with tab_jumbo:
                     row["Nombre"] = nombre_api if nombre_api else nombre_base
 
                     co = (item_sel.get("sellers") or [{}])[0].get("commertialOffer") or {}
-                    list_price = float(co.get("ListPrice") or 0)
-                    price = float(co.get("Price") or 0)
 
-                    # ListPrice (columna pedida)
-                    row["ListPrice"] = format_ar_price_no_thousands(list_price) if list_price > 0 else "Sin Precio"
+                    # ✅ Jumbo: PWD es la fuente oficial del precio regular (ListPrice)
+                    pwd = normalize_money(co.get("PriceWithoutDiscount"))
+                    price = normalize_money(co.get("Price"))
 
-                    suspicious = listprice_is_suspicious(list_price, price)
+                    list_price_num = pwd if (pwd is not None and pwd > 0) else price
+                    row["ListPrice"] = format_ar_price_no_thousands(list_price_num) if list_price_num else "Sin Precio"
 
-                    # Oferta:
+                    # ✅ Oferta:
                     oferta = ""
 
-                    # (1) descuento unitario solo si listPrice no es sospechoso
-                    if not suspicious:
-                        pct = compute_percent_off(list_price, price)
-                        if pct:
-                            oferta = f"{pct}% off"
+                    # A) Si hay descuento unitario (Price < PWD): mostrar % off
+                    if price is not None and pwd is not None and price > 0 and pwd > 0 and price < pwd:
+                        p = pct_off(price, pwd)
+                        if p:
+                            oferta = f"{p}% off"
 
-                    # (2) si no hay oferta por % (o listPrice sospechoso), consultar search-promotions
+                    # B) Si no hay descuento unitario: buscar promo externa (search-promotions)
                     if not oferta:
                         sku_id = str(item_sel.get("itemId") or "").strip()
                         link_text = (prod.get("linkText") or "").strip()
@@ -1272,7 +1288,13 @@ with tab_jumbo:
                     row["Oferta"] = oferta
 
                     if SHOW_DEBUG_JUMBO:
-                        st.text(f"OK {ean} | {used_url} | sku={item_sel.get('itemId')} | oferta='{oferta}'")
+                        raw_lp = co.get("ListPrice")
+                        st.text(
+                            f"OK {ean} | sku={item_sel.get('itemId')} | "
+                            f"PWD={co.get('PriceWithoutDiscount')} Price={co.get('Price')} rawLP={raw_lp} | "
+                            f"ListPrice(out)={row['ListPrice']} Oferta='{row['Oferta']}'"
+                        )
+                        st.text(f"URL: {used_url}")
 
                 except Exception:
                     pass  # dejamos ListPrice = Sin Precio, Oferta vacío
@@ -1581,6 +1603,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
