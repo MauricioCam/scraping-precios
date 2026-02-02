@@ -1326,7 +1326,7 @@ with tab_jumbo:
 #   ✅ Ignora commertialOffer.ListPrice (viene en escala errónea en algunos SKUs)
 #   ✅ Cachea SOLO checkout/promotions por EAN (no cambia lógica del scraping)
 # ============================================
-with tab_Vea:
+with tab_vea:
     st.subheader("Vea · Relevamiento por EAN (VTEX + search-promotions)")
     st.caption(
         "ListPrice = **PriceWithoutDiscount**. "
@@ -1796,6 +1796,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
