@@ -1553,18 +1553,18 @@ with tab_vea:
 
 
 # ============================================
-# 🟡 Cooperativa Obrera (ListPrice + Price)
+# 🟡 Cooperativa Obrera (ListPrice + Oferta)
 # ============================================
 with tab_coope:
     st.subheader("Cooperativa Obrera · Relevamiento por cod_coope")
-    st.caption("Consulta el endpoint oficial y devuelve **ListPrice (precio_anterior)** y **Price (precio)**.")
+    st.caption("Consulta el endpoint oficial y devuelve **ListPrice (precio_anterior)** y **Oferta** (texto interpretado: 3x2 / % off / etc.).")
 
+    import re
     import requests
     import pandas as pd
     from datetime import datetime
 
-    # ✅ nuevo origen del listado
-    # listado_cooperativa.py debe exponer un dict (ej: productos = {...})
+    # ✅ listado_cooperativa.py debe exponer: productos = { "Nombre": {...} }
     from listado_cooperativa import productos
 
     HEADERS_COOPE = {
@@ -1572,37 +1572,122 @@ with tab_coope:
         "Accept": "application/json,text/plain,*/*",
     }
 
+    # -------------------------
+    # Helpers
+    # -------------------------
     def _is_no_encontrado(cod: str) -> bool:
-        """
-        Normaliza casos tipo: 'NO_ENCONTRADO', 'no_encontrado ', 'No Encontrado', etc.
-        """
-        c = (cod or "").strip().upper()
-        c = c.replace(" ", "_")
-        return c == "NO_ENCONTRADO" or c == "NO" or c == "NO_ENCONTRADO,"  # tolerancia
+        c = (cod or "").strip().upper().replace(" ", "_")
+        return c in ("NO_ENCONTRADO", "NO", "NO_ENCONTRADO,")
 
     def _to_float(x):
         try:
             if x in (None, ""):
-                return 0.0
+                return None
             return float(str(x))
         except Exception:
-            return 0.0
+            return None
 
+    def format_ar_price_no_thousands(value):
+        """1795.0 -> '1795,00' (sin separador de miles)."""
+        if value is None:
+            return ""
+        return f"{float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", "")
+
+    RE_LLEVANDO = re.compile(r"llevando\s+(\d+)", re.I)
+    RE_PCT = re.compile(r"(\d+(?:[.,]\d+)?)\s*%", re.I)
+    RE_NXM = re.compile(r"\b(\d+)\s*x\s*(\d+)\b", re.I)
+
+    def extract_oferta(datos: dict) -> str:
+        """
+        Prioridad para 'Oferta':
+        1) Inferir Nx(N-1) (ej: n=3 y pct ~ 100/n => 3x2)
+        2) % off explícito (campo o texto)
+        3) % off implícito por precios (precio vs precio_anterior)
+        4) NxM literal en texto
+        5) Promo por precio (precio_promo distinto) -> 'Precio promo'
+        6) fallback descripcion_promo
+        7) si no hay promo -> ''
+        """
+        if not isinstance(datos, dict):
+            return ""
+
+        existe = datos.get("existe_promo")
+        existe_bool = str(existe).strip().lower() in ("1", "true", "si", "sí", "s")
+        if not existe_bool:
+            return ""
+
+        desc = str(datos.get("descripcion_promo") or "").strip()
+
+        # precios para cálculo
+        precio = _to_float(datos.get("precio"))
+        precio_ant = _to_float(datos.get("precio_anterior"))
+
+        # cantidad_promo (N)
+        n = _to_float(datos.get("cantidad_promo"))
+        if (n is None or n <= 0) and desc:
+            m_n = RE_LLEVANDO.search(desc)
+            if m_n:
+                n = _to_float(m_n.group(1))
+
+        # descuento % (campo o texto)
+        pct = _to_float(datos.get("descuento_porcentaje_promo"))
+        if pct is None and desc:
+            m_pct = RE_PCT.search(desc)
+            if m_pct:
+                pct = _to_float(m_pct.group(1).replace(",", "."))
+
+        # 1) Inferir Nx(N-1)
+        if n and n >= 2 and pct:
+            target = 100.0 / float(n)
+            if abs(float(pct) - target) <= 1.0:  # tolerancia
+                return f"{int(n)}x{int(n)-1}"
+
+        # 2) % off explícito
+        if pct is not None and pct > 0:
+            pct_str = str(int(round(pct))) if abs(pct - round(pct)) < 0.05 else f"{pct:.2f}".rstrip("0").rstrip(".")
+            return f"{pct_str}% off"
+
+        # 3) % off implícito por precios
+        if precio_ant and precio and precio_ant > 0 and precio < precio_ant:
+            pct_calc = (1.0 - (precio / precio_ant)) * 100.0
+            pct_calc_round = int(round(pct_calc))
+            if pct_calc_round > 0:
+                return f"{pct_calc_round}% off"
+
+        # 4) NxM literal en texto
+        if desc:
+            m = RE_NXM.search(desc)
+            if m:
+                return f"{m.group(1)}x{m.group(2)}"
+
+        # 5) promo por precio
+        precio_promo = _to_float(datos.get("precio_promo"))
+        if precio_promo is not None and precio_promo > 0:
+            if (precio is None) or (abs(precio_promo - precio) > 0.001):
+                return "Precio promo"
+
+        # 6) fallback
+        return desc or ""
+
+    # -------------------------
+    # Run
+    # -------------------------
     if st.button("🟡 Ejecutar relevamiento (Cooperativa Obrera)"):
         with st.spinner("⏳ Relevando Cooperativa Obrera..."):
             resultados = []
 
             for nombre, meta in productos.items():
+                meta = meta or {}
+
                 empresa = str(meta.get("empresa", "")).strip()
                 categoria = str(meta.get("categoría", "")).strip()
                 subcategoria = str(meta.get("subcategoría", "")).strip()
                 marca = str(meta.get("marca", "")).strip()
                 ean = str(meta.get("ean", "")).strip()
 
-                # ✅ soporta ambas llaves por robustez (cod_coope / cod_coop)
+                # ✅ soporta cod_coope o cod_coop
                 cod = str(meta.get("cod_coope", meta.get("cod_coop", ""))).strip()
 
-                # ✅ fila base requerida
                 row = {
                     "Empresa": empresa,
                     "Categoría": categoria,
@@ -1610,11 +1695,10 @@ with tab_coope:
                     "Marca": marca,
                     "Nombre": nombre,
                     "EAN": ean,
-                    "ListPrice": "Revisar",  # precio_anterior
-                    "Price": "Revisar",      # precio
+                    "ListPrice": "Revisar",
+                    "Oferta": "",
                 }
 
-                # ✅ Regla: si NO_ENCONTRADO -> Revisar
                 if (not cod) or _is_no_encontrado(cod):
                     resultados.append(row)
                     continue
@@ -1631,35 +1715,30 @@ with tab_coope:
 
                     datos_node = (j or {}).get("datos") or {}
 
-                    # ✅ ListPrice = precio_anterior
-                    lp_raw = datos_node.get("precio_anterior")
-                    # ✅ Price = precio
-                    pr_raw = datos_node.get("precio")
+                    lp = _to_float(datos_node.get("precio_anterior"))
+                    pr = _to_float(datos_node.get("precio"))  # no se muestra, pero sirve para calcular % implícito
 
-                    lp = _to_float(lp_raw)
-                    pr = _to_float(pr_raw)
-
-                    # Si vienen válidos, los mostramos formateados
-                    if lp > 0:
+                    if lp and lp > 0:
                         row["ListPrice"] = format_ar_price_no_thousands(lp)
-                    if pr > 0:
-                        row["Price"] = format_ar_price_no_thousands(pr)
+                    else:
+                        row["ListPrice"] = "Revisar"
+
+                    # ✅ Oferta interpretada (3x2, % off, etc.)
+                    row["Oferta"] = extract_oferta(datos_node)
 
                 except Exception:
-                    # Si falla, se queda en "Revisar"
                     pass
 
                 resultados.append(row)
 
             df = pd.DataFrame(
                 resultados,
-                columns=["Empresa", "Categoría", "Subcategoría", "Marca", "Nombre", "EAN", "ListPrice", "Price"],
+                columns=["Empresa", "Categoría", "Subcategoría", "Marca", "Nombre", "EAN", "ListPrice", "Oferta"],
             )
 
             st.success("✅ Relevamiento Cooperativa Obrera completado")
             st.dataframe(df, use_container_width=True)
 
-            # (Opcional) descarga CSV, lo dejo porque ya estaba en tu flujo
             fecha = datetime.now().strftime("%Y-%m-%d")
             st.download_button(
                 label="⬇ Descargar CSV (Cooperativa Obrera)",
@@ -1753,6 +1832,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
