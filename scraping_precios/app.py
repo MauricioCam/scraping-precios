@@ -1320,172 +1320,163 @@ with tab_jumbo:
             )
 
 # ============================================
-# 🟢 Vea (Cencosud / VTEX) — ListPrice + Oferta (unit discount OR search-promotions)
-#   ✅ ListPrice = PriceWithoutDiscount (siempre que exista)
-#   ✅ Oferta = "% off" si Price < PriceWithoutDiscount; si no, /_v/search-promotions
-#   ✅ Ignora commertialOffer.ListPrice (viene en escala errónea en algunos SKUs)
-#   ✅ Cachea SOLO checkout/promotions por EAN (no cambia lógica del scraping)
+# 🟢 Vea (Cencosud) — Catálogo (VTEX) + Promos (search-promotions)
 # ============================================
 with tab_vea:
-    st.subheader("Vea · Relevamiento por EAN (VTEX + search-promotions)")
+    st.subheader("Vea · Relevamiento por EAN (VTEX + Promos)")
     st.caption(
-        "ListPrice = **PriceWithoutDiscount**. "
-        "Oferta = **% off** si hay descuento unitario (Price < PWD); si no, se obtiene desde **/_v/search-promotions**."
+        "1) Catálogo VTEX por **EAN** (sc=34, con vtex_segment) → **Price** y **PriceWithoutDiscount**.\n"
+        "2) Promos por SKU vía **POST /_v/search-promotions** (seller fijo) → **Oferta**.\n"
+        "ListPrice = PriceWithoutDiscount. Si hay descuento unitario, Oferta muestra el %."
     )
 
-    # Datos de entrada (Cencosud: Vea/Vea, etc.)
+    # Datos de entrada (Vea) — listado_cencosud.py
     from listado_cencosud import productos  # {"Nombre": {"empresa": "...", "categoría": "...", "subcategoría": "...", "marca": "...", "ean": "..."}}
 
-    import json
-    import requests
+    # -------------------------
+    # Constantes Vea (predeterminadas)
+    # -------------------------
+    BASE_VEA = "https://www.vea.com.ar"
+    SC_VEA = "34"
 
-    # 🔒 Config fija (validada)
-    BASE_Vea = "https://www.Vea.com.ar"
-    SC_Vea = "32"
-    SELLER_PROMO = "Veaargentinaj5202martinez"
-    VTEX_SEGMENT_Vea = (
-        "eyJjYW1wYWlnbnMiOm51bGwsImNoYW5uZWwiOiIzMiIsInByaWNlVGFibGVzIjpudWxsLCJyZWdpb25JZCI6bnVsbCwidXRtX2NhbXBhaWduIjpudWxsLCJ1dG1fc291cmNlIjpudWxsLCJ1dG1pX2NhbXBhaWduIjpudWxsLCJjdXJyZW5jeUNvZGUiOiJBUlMiLCJjdXJyZW5jeVN5bWJvbCI6IiQiLCJjb3VudHJ5Q29kZSI6IkFSRyIsImN1bHR1cmVJbmZvIjoiZXMtQVIiLCJjaGFubmVsUHJpdmFjeSI6InB1YmxpYyJ9"
+    # vtex_segment (el que ya nos pasaste para Vea)
+    VTEX_SEGMENT_VEA = (
+        "eyJjYW1wYWlnbnMiOm51bGwsImNoYW5uZWwiOiIzNCIsInByaWNlVGFibGVzIjpudWxsLCJyZWdpb25JZCI6IlUxY2phblZ0WW05aGNtZGxiblJwYm1GMk56QXdZMjl5Wkc5aVlUY3dNQT09IiwidXRtX2NhbXBhaWduIjpudWxsLCJ1dG1fc291cmNlIjpudWxsLCJ1dG1pX2NhbXBhaWduIjpudWxsLCJjdXJyZW5jeUNvZGUiOiJBUlMiLCJjdXJyZW5jeVN5bWJvbCI6IiQiLCJjb3VudHJ5Q29kZSI6IkFSRyIsImN1bHR1cmVJbmZvIjoiZXMtQVIiLCJhZG1pbl9jdWx0dXJlSW5mbyI6ImVzLUFSIiwiY2hhbm5lbFByaXZhY3kiOiJwdWJsaWMifQ"
     )
 
-    TIMEOUTS = (4, 18)
-    SHOW_DEBUG_Vea = st.checkbox("Mostrar debug (Vea)", value=False)
+    # Seller promos (reutilizado)
+    SELLER_PROMOS_VEA = "jumboargentinaj5202martinez"
 
-    HEADERS_Vea = {
+    HEADERS_VEA = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "application/json,text/plain,*/*",
-        "Cookie": f"vtex_segment={VTEX_SEGMENT_Vea}",
+        "Cookie": f"vtex_segment={VTEX_SEGMENT_VEA}",
     }
 
-    # ✅ Cache SOLO del endpoint /_v/search-promotions (por EAN)
-    if "Vea_promos_cache" not in st.session_state:
-        st.session_state["Vea_promos_cache"] = {}  # {ean: oferta_str}
+    PROMOS_HEADERS = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json,text/plain,*/*",
+        "Content-Type": "application/json",
+    }
 
-    if st.button("🧹 Limpiar cache de ofertas (Vea)"):
-        st.session_state["Vea_promos_cache"] = {}
-        st.success("Cache de search-promotions limpiada.")
+    TIMEOUT = 12
 
-    def normalize_money(val):
+    # -------------------------
+    # Helpers
+    # -------------------------
+    def _pick_item_by_ean(items: list, ean: str):
+        """Selecciona item que matchee por item.ean o por referenceId.Value; fallback: primero."""
+        if not items:
+            return None
+        ean = str(ean).strip()
+        for it in items:
+            if str(it.get("ean") or "").strip() == ean:
+                return it
+            for ref in (it.get("referenceId") or []):
+                if str(ref.get("Value") or "").strip() == ean:
+                    return it
+        return items[0]
+
+    def _extract_offer_from_promotions_json(promos_json: dict, sku_id: str):
         """
-        Vea: Price y PriceWithoutDiscount vienen en pesos (float).
-        Aun así, dejamos un normalizador defensivo por si algún caso viene en centavos.
+        Busca la promo para el SKU dentro de:
+        promotions -> generic/sgc/jumbo_prime -> promotions -> {sku_id: {...}}
+        Devuelve texto de oferta (str) o "".
         """
-        if val is None:
-            return None
+        if not isinstance(promos_json, dict):
+            return ""
+
+        promotions = promos_json.get("promotions") or {}
+        if not isinstance(promotions, dict):
+            return ""
+
+        for bucket_name in ("generic", "sgc", "jumbo_prime"):
+            bucket = promotions.get(bucket_name) or {}
+            bpromos = bucket.get("promotions") or {}
+            if isinstance(bpromos, dict) and str(sku_id) in bpromos:
+                p = bpromos.get(str(sku_id)) or {}
+                # Preferimos "code" (ej: "2do al 80%"), si no "name"
+                code = (p.get("code") or "").strip()
+                name = (p.get("name") or "").strip()
+                return code or name or ""
+        return ""
+
+    def _compute_unit_discount_pct(list_price: float, price: float) -> str:
+        """
+        Si hay descuento unitario (Price < PriceWithoutDiscount), devuelve "35%".
+        Si no, "".
+        """
         try:
-            v = float(val)
-        except Exception:
-            return None
-        if v <= 0:
-            return None
-
-        # Heurística defensiva: si parece centavos (muy grande e integer), dividir por 100
-        if v > 10000 and float(v).is_integer():
-            return v / 100
-
-        return v
-
-    def pct_off(price: float, list_price: float):
-        """% off entero si price < list_price."""
-        try:
-            if price and list_price and price > 0 and list_price > 0 and price < list_price:
-                pct = round((1 - (price / list_price)) * 100)
-                return int(pct) if pct > 0 else None
+            if list_price and price and float(list_price) > 0 and float(price) > 0 and float(price) < float(list_price):
+                pct = round((1 - float(price) / float(list_price)) * 100)
+                if pct > 0:
+                    return f"{pct}%"
         except Exception:
             pass
-        return None
+        return ""
 
-    def vt_search_by_ean(session: requests.Session, ean: str):
-        """Busca producto por EAN en VTEX catalog_system (alternateIds_Ean y fallback ean)."""
-        url = f"{BASE_Vea}/api/catalog_system/pub/products/search"
-
-        # 1) alternateIds_Ean
-        params = {"fq": f"alternateIds_Ean:{ean}", "sc": SC_Vea}
-        r = session.get(url, headers=HEADERS_Vea, params=params, timeout=TIMEOUTS)
-        if SHOW_DEBUG_Vea:
-            st.text(f"CATALOG altEan: {r.url} | {r.status_code}")
+    def fetch_vea_catalog_and_offer(session: requests.Session, ean: str):
+        """
+        Devuelve:
+        - nombre_api
+        - sku_id (itemId)
+        - list_price_num (PriceWithoutDiscount)
+        - offer_text (promo code/name o % descuento unitario)
+        """
+        # 1) Catálogo (VTEX)
+        url = f"{BASE_VEA}/api/catalog_system/pub/products/search"
+        params = {"fq": f"alternateIds_Ean:{ean}", "sc": SC_VEA}
+        r = session.get(url, headers=HEADERS_VEA, params=params, timeout=TIMEOUT)
         r.raise_for_status()
         data = r.json()
 
-        # 2) fallback ean
         if not data:
-            params = {"fq": f"ean:{ean}", "sc": SC_Vea}
-            r = session.get(url, headers=HEADERS_Vea, params=params, timeout=TIMEOUTS)
-            if SHOW_DEBUG_Vea:
-                st.text(f"CATALOG ean: {r.url} | {r.status_code}")
-            r.raise_for_status()
-            data = r.json()
-
-        if not data:
-            return None, None, None
+            return None, None, None, ""
 
         prod = data[0]
         items = prod.get("items") or []
+        item_sel = _pick_item_by_ean(items, ean)
+        if not item_sel or not item_sel.get("sellers"):
+            return (prod.get("productName") or None), None, None, ""
 
-        # Elegimos item que matchee EAN (ean o referenceId.Value). Si no, el primero.
-        item_sel = None
-        for it in items:
-            if str(it.get("ean") or "").strip() == str(ean).strip():
-                item_sel = it
-                break
-            for ref in (it.get("referenceId") or []):
-                if str(ref.get("Value") or "").strip() == str(ean).strip():
-                    item_sel = it
-                    break
-            if item_sel:
-                break
-        if not item_sel and items:
-            item_sel = items[0]
+        sku_id = str(item_sel.get("itemId") or "").strip()
+        co = (item_sel.get("sellers") or [{}])[0].get("commertialOffer", {}) or {}
 
-        return prod, item_sel, (r.url if hasattr(r, "url") else None)
+        # ✔️ ListPrice real = PriceWithoutDiscount (según tus ejemplos)
+        price = co.get("Price")
+        pwd = co.get("PriceWithoutDiscount")
 
-    def fetch_search_promotions(session: requests.Session, sku_id: str, referer: str):
-        """POST /_v/search-promotions con {seller, skus:[skuId]}"""
-        url = f"{BASE_Vea}/_v/search-promotions"
-        headers = dict(HEADERS_Vea)
-        headers["Content-Type"] = "application/json"
-        headers["Origin"] = BASE_Vea
-        headers["Referer"] = referer or (BASE_Vea + "/")
+        # Normalizamos a float
+        try:
+            price_num = float(price) if price is not None else None
+        except Exception:
+            price_num = None
+        try:
+            pwd_num = float(pwd) if pwd is not None else None
+        except Exception:
+            pwd_num = None
 
-        payload = {"seller": SELLER_PROMO, "skus": [str(sku_id)]}
-        r = session.post(url, headers=headers, data=json.dumps(payload), timeout=TIMEOUTS)
-        if SHOW_DEBUG_Vea:
-            st.text(f"PROMOS: {url} | {r.status_code} | sku={sku_id}")
-        r.raise_for_status()
-        return r.json()
+        # 2) Oferta:
+        #   - Si hay descuento unitario: Oferta = "% descuento"
+        #   - Si no hay descuento unitario: ir a /_v/search-promotions y buscar promo por SKU
+        offer_text = ""
+        unit_pct = _compute_unit_discount_pct(pwd_num or 0.0, price_num or 0.0)
+        if unit_pct:
+            offer_text = unit_pct
+        else:
+            if sku_id:
+                promos_url = f"{BASE_VEA}/_v/search-promotions"
+                payload = {"seller": SELLER_PROMOS_VEA, "skus": [sku_id]}
+                rp = session.post(promos_url, headers=PROMOS_HEADERS, json=payload, timeout=TIMEOUT)
+                rp.raise_for_status()
+                offer_text = _extract_offer_from_promotions_json(rp.json(), sku_id)
 
-    def parse_promo(resp_json: dict, sku_id: str) -> str:
-        """Extrae code/name desde promotions.*.promotions[skuId]."""
-        sku_id = str(sku_id)
-        promos_root = (resp_json.get("promotions") or {})
+        nombre_api = (prod.get("productName") or "").strip() or None
+        return nombre_api, sku_id, pwd_num, (offer_text or "")
 
-        for bucket in promos_root.values():
-            bucket_promos = (bucket.get("promotions") or {})
-            if sku_id in bucket_promos:
-                p = bucket_promos[sku_id] or {}
-                code = (p.get("code") or "").strip()
-                name = (p.get("name") or "").strip()
-
-                if code:
-                    return code
-                if name:
-                    return name.split("|")[0].strip()
-        return ""
-
-    def get_offer_cached(session: requests.Session, ean: str, sku_id: str, referer: str) -> str:
-        cache = st.session_state["Vea_promos_cache"]
-        ean_key = str(ean).strip()
-
-        if ean_key in cache:
-            return cache[ean_key]
-
-        resp = fetch_search_promotions(session, sku_id=sku_id, referer=referer)
-        oferta = parse_promo(resp, sku_id=sku_id)
-
-        cache[ean_key] = oferta
-        return oferta
-
-    st.markdown(f"**Productos cargados:** {len(productos)} (se espera `ean` en cada ítem)")
-
+    # -------------------------
+    # UI acción
+    # -------------------------
     if st.button("🟢 Ejecutar relevamiento (Vea)"):
         with st.spinner("⏳ Relevando Vea..."):
             s = requests.Session()
@@ -1521,57 +1512,24 @@ with tab_vea:
                         prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
                         continue
 
-                    prod, item_sel, used_url = vt_search_by_ean(s, ean)
-                    if not prod or not item_sel or not item_sel.get("sellers"):
-                        resultados.append(row)
-                        done += 1
-                        prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
-                        continue
+                    nombre_api, sku_id, list_price_num, offer_text = fetch_vea_catalog_and_offer(s, ean)
 
-                    # Nombre: priorizamos API
-                    nombre_api = (prod.get("productName") or "").strip()
-                    row["Nombre"] = nombre_api if nombre_api else nombre_base
+                    # Nombre: prioriza API
+                    if nombre_api:
+                        row["Nombre"] = nombre_api
 
-                    co = (item_sel.get("sellers") or [{}])[0].get("commertialOffer") or {}
+                    # ListPrice real = PriceWithoutDiscount
+                    if list_price_num is not None and float(list_price_num) > 0:
+                        row["ListPrice"] = format_ar_price_no_thousands(list_price_num)
+                    else:
+                        row["ListPrice"] = "Sin Precio"
 
-                    # ✅ Vea: PWD es la fuente oficial del precio regular (ListPrice)
-                    pwd = normalize_money(co.get("PriceWithoutDiscount"))
-                    price = normalize_money(co.get("Price"))
-
-                    list_price_num = pwd if (pwd is not None and pwd > 0) else price
-                    row["ListPrice"] = format_ar_price_no_thousands(list_price_num) if list_price_num else "Sin Precio"
-
-                    # ✅ Oferta:
-                    oferta = ""
-
-                    # A) Si hay descuento unitario (Price < PWD): mostrar % off
-                    if price is not None and pwd is not None and price > 0 and pwd > 0 and price < pwd:
-                        p = pct_off(price, pwd)
-                        if p:
-                            oferta = f"{p}% off"
-
-                    # B) Si no hay descuento unitario: buscar promo externa (search-promotions)
-                    if not oferta:
-                        sku_id = str(item_sel.get("itemId") or "").strip()
-                        link_text = (prod.get("linkText") or "").strip()
-                        referer = f"{BASE_Vea}/{link_text}/p" if link_text else f"{BASE_Vea}/"
-
-                        if sku_id:
-                            oferta = get_offer_cached(s, ean=ean, sku_id=sku_id, referer=referer)
-
-                    row["Oferta"] = oferta
-
-                    if SHOW_DEBUG_Vea:
-                        raw_lp = co.get("ListPrice")
-                        st.text(
-                            f"OK {ean} | sku={item_sel.get('itemId')} | "
-                            f"PWD={co.get('PriceWithoutDiscount')} Price={co.get('Price')} rawLP={raw_lp} | "
-                            f"ListPrice(out)={row['ListPrice']} Oferta='{row['Oferta']}'"
-                        )
-                        st.text(f"URL: {used_url}")
+                    # Oferta (puede ser "", "2do al 80%", "35%")
+                    row["Oferta"] = offer_text or ""
 
                 except Exception:
-                    pass  # dejamos ListPrice = Sin Precio, Oferta vacío
+                    # Mantenemos "Sin Precio" y Oferta ""
+                    pass
 
                 resultados.append(row)
                 done += 1
@@ -1589,10 +1547,9 @@ with tab_vea:
             st.download_button(
                 label="⬇ Descargar CSV (Vea)",
                 data=df.to_csv(index=False).encode("utf-8"),
-                file_name=f"precios_Vea_{fecha}.csv",
+                file_name=f"precios_vea_{fecha}.csv",
                 mime="text/csv",
             )
-
 
 
 # ============================================
@@ -1796,6 +1753,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
