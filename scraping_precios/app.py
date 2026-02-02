@@ -348,14 +348,14 @@ with tab_dia:
 
     
 # ============================================
-# 🟢 ChangoMás (por EAN + Oferta por Checkout)
+# 🟢 ChangoMás (por EAN + Oferta optimizada)
 # ============================================
 with tab_chango:
     st.subheader("ChangoMás · Relevamiento por EAN (VTEX + Checkout)")
     st.caption(
         "Busca por **EAN** en VTEX Search. "
         "**ListPrice** sale de `commertialOffer.ListPrice`. "
-        "**Oferta**: si `Price < ListPrice` muestra `% off`; si no, detecta mecánicas (2da al %, 3x2, 4x2, 3x6) vía Checkout."
+        "**Oferta**: si `Price < ListPrice` muestra `% off`; si no, detecta mecánicas vía Checkout (2da al %, 3x2 y opcional 4x2)."
     )
 
     # Datos de entrada (ChangoMás)
@@ -367,6 +367,8 @@ with tab_chango:
     )
     vtex_segment = st.text_input("vtex_segment (ChangoMás)", value=DEFAULT_SEGMENT, type="password")
     sc_primary = st.text_input("Sales channel (sc)", value="1", help="Canal de ventas VTEX, ej: 1")
+    # 🔥 Nuevo: para performance, permitir desactivar qty=4
+    try_4x2 = st.checkbox("Detectar ofertas 4x2 (requiere 1 request extra por producto sin oferta)", value=True)
     show_debug_cm = st.checkbox("Mostrar requests (debug)", value=False)
 
     # Constantes
@@ -385,8 +387,8 @@ with tab_chango:
 
     def simplify_offer_text(text: str) -> str:
         """
-        Resume texto de promo:
-        - NxM (3x2, 4x2, 3x6) -> '3x2'
+        Resumen:
+        - NxM (3x2, 4x2) -> '3x2'
         - '2da/2do al XX%' -> '2da al 50%'
         - fallback -> texto completo
         """
@@ -438,7 +440,7 @@ with tab_chango:
         return items[0] if items else None
 
     # ----------------------------
-    # Checkout (para mecánicas)
+    # ✅ Checkout optimizado (1 carrito + updates)
     # ----------------------------
     def create_orderform(session: requests.Session, headers: dict):
         url = f"{BASE_CM}/api/checkout/pub/orderForm"
@@ -448,12 +450,25 @@ with tab_chango:
         r.raise_for_status()
         return r.json()
 
-    def add_items_to_orderform(session: requests.Session, orderform_id: str, sku_id: str, seller_id: str, qty: int, headers: dict):
+    def add_item_orderform(session: requests.Session, orderform_id: str, sku_id: str, seller_id: str, qty: int, headers: dict):
         url = f"{BASE_CM}/api/checkout/pub/orderForm/{orderform_id}/items"
         payload = {"orderItems": [{"id": str(sku_id), "quantity": int(qty), "seller": str(seller_id)}]}
         r = session.post(url, headers=headers, json=payload, timeout=TIMEOUTS)
         if show_debug_cm:
             st.text(f"ORDERFORM add qty={qty}: {r.status_code}")
+        r.raise_for_status()
+        return r.json()
+
+    def update_item_qty(session: requests.Session, orderform_id: str, index: int, qty: int, headers: dict):
+        """
+        VTEX: update quantity del item por índice.
+        Nota: 'seller' no siempre es necesario, pero lo incluimos si VTEX lo exige.
+        """
+        url = f"{BASE_CM}/api/checkout/pub/orderForm/{orderform_id}/items/update"
+        payload = {"orderItems": [{"index": int(index), "quantity": int(qty)}]}
+        r = session.post(url, headers=headers, json=payload, timeout=TIMEOUTS)
+        if show_debug_cm:
+            st.text(f"ORDERFORM update idx={index} qty={qty}: {r.status_code}")
         r.raise_for_status()
         return r.json()
 
@@ -475,23 +490,50 @@ with tab_chango:
                 seen.add(n)
         return out
 
-    def detect_offer_via_checkout(session: requests.Session, sku_id: str, seller_id: str, headers: dict, quantities=(2, 3, 4, 6)):
+    def detect_offer_via_checkout_fast(session: requests.Session, sku_id: str, seller_id: str, headers: dict, try_4: bool):
+        """
+        Optimización:
+        - 1 orderForm por producto
+        - add qty=2 (detecta 2da al %)
+        - si no hay promo, update qty=3 (detecta 3x2)
+        - opcional: update qty=4 (detecta 4x2)
+        """
         of0 = create_orderform(session, headers=headers)
         of_id = of0.get("orderFormId")
         if not of_id:
             return ""
 
-        for qty in quantities:
-            of = add_items_to_orderform(session, of_id, sku_id, seller_id, qty, headers=headers)
+        # 1) qty=2
+        of = add_item_orderform(session, of_id, sku_id, seller_id, qty=2, headers=headers)
+        promos = extract_promos(of)
+        if promos:
+            simp = [simplify_offer_text(p) for p in promos]
+            return " | ".join(dict.fromkeys([s for s in simp if s]))
+
+        # Encontrar índice del item agregado (normalmente 0)
+        items = of.get("items") or []
+        idx = 0
+        if items:
+            # confirmamos que sea el sku correcto; si no, igual usamos 0 como fallback
+            for i, it in enumerate(items):
+                if str(it.get("id") or "").strip() == str(sku_id):
+                    idx = i
+                    break
+
+        # 2) qty=3
+        of = update_item_qty(session, of_id, index=idx, qty=3, headers=headers)
+        promos = extract_promos(of)
+        if promos:
+            simp = [simplify_offer_text(p) for p in promos]
+            return " | ".join(dict.fromkeys([s for s in simp if s]))
+
+        # 3) qty=4 (solo si el usuario lo habilita)
+        if try_4:
+            of = update_item_qty(session, of_id, index=idx, qty=4, headers=headers)
             promos = extract_promos(of)
             if promos:
-                simplified = [simplify_offer_text(p) for p in promos]
-                out, seen = [], set()
-                for s in simplified:
-                    if s and s not in seen:
-                        out.append(s)
-                        seen.add(s)
-                return " | ".join(out)
+                simp = [simplify_offer_text(p) for p in promos]
+                return " | ".join(dict.fromkeys([s for s in simp if s]))
 
         return ""
 
@@ -514,12 +556,10 @@ with tab_chango:
             sc = sc_primary.strip() or "1"
 
             for nombre_base, datos in productos.items():
-                # Metadatos
                 empresa = (datos.get("empresa") or "").strip()
                 categoria = (datos.get("categoría") or "").strip()
                 subcategoria = (datos.get("subcategoría") or "").strip()
                 marca = (datos.get("marca") or "").strip()
-
                 ean = str(datos.get("ean") or "").strip()
 
                 row = {
@@ -569,26 +609,22 @@ with tab_chango:
                     price = float(co.get("Price") or 0)
 
                     # ListPrice (columna pedida)
-                    if list_price > 0:
-                        row["ListPrice"] = format_ar_price_no_thousands(list_price)
-                    else:
-                        row["ListPrice"] = "Sin Precio"
+                    row["ListPrice"] = format_ar_price_no_thousands(list_price) if list_price > 0 else "Sin Precio"
 
                     # 1) Oferta por descuento unitario (% off) si Price < ListPrice
                     pct = compute_percent_off(list_price, price)
                     if pct:
                         row["Oferta"] = f"{pct}% off"
                     else:
-                        # 2) Oferta por mecánicas (checkout) si no hay % off
-                        #    probamos qty=2,3,4,6 (2da al %, 3x2, 4x2, 3x6)
+                        # 2) Mecánicas vía checkout (optimizado): qty=2 -> qty=3 -> opcional qty=4
                         sku_id = str(item_sel.get("itemId") or "").strip()
                         if sku_id:
-                            row["Oferta"] = detect_offer_via_checkout(
+                            row["Oferta"] = detect_offer_via_checkout_fast(
                                 s,
                                 sku_id=sku_id,
                                 seller_id=seller_id,
                                 headers=headers_cm,
-                                quantities=(2, 3, 4, 6),
+                                try_4=try_4x2,
                             )
 
                     if show_debug_cm:
@@ -1336,6 +1372,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
