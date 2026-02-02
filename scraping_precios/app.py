@@ -348,14 +348,15 @@ with tab_dia:
 
     
 # ============================================
-# 🟢 ChangoMás (por EAN + Oferta optimizada)
+# 🟢 ChangoMás (por EAN + Oferta optimizada + Cache checkout por EAN)
 # ============================================
 with tab_chango:
     st.subheader("ChangoMás · Relevamiento por EAN (VTEX + Checkout)")
     st.caption(
         "Busca por **EAN** en VTEX Search. "
         "**ListPrice** sale de `commertialOffer.ListPrice`. "
-        "**Oferta**: si `Price < ListPrice` muestra `% off`; si no, detecta mecánicas vía Checkout (2da al %, 3x2 y opcional 4x2)."
+        "**Oferta**: si `Price < ListPrice` muestra `% off`; si no, detecta mecánicas vía Checkout (2da al %, 3x2 y opcional 4x2). "
+        "Incluye **cache por EAN** del resultado de Checkout (dependiente de vtex_segment/sc)."
     )
 
     # Datos de entrada (ChangoMás)
@@ -367,14 +368,26 @@ with tab_chango:
     )
     vtex_segment = st.text_input("vtex_segment (ChangoMás)", value=DEFAULT_SEGMENT, type="password")
     sc_primary = st.text_input("Sales channel (sc)", value="1", help="Canal de ventas VTEX, ej: 1")
-    # 🔥 Nuevo: para performance, permitir desactivar qty=4
-    try_4x2 = st.checkbox("Detectar ofertas 4x2 (requiere 1 request extra por producto sin oferta)", value=True)
+
+    # Performance knobs
+    try_4x2 = st.checkbox("Detectar ofertas 4x2 (1 request extra por producto sin oferta)", value=True)
     show_debug_cm = st.checkbox("Mostrar requests (debug)", value=False)
+
+    # ✅ Cache de ofertas (checkout) por EAN + vtex_segment + sc + try_4x2
+    if "chango_checkout_cache" not in st.session_state:
+        st.session_state["chango_checkout_cache"] = {}  # {(ean, vtex_segment, sc, try_4x2): oferta_str}
+
+    if st.button("🧹 Limpiar cache de ofertas (ChangoMás)"):
+        st.session_state["chango_checkout_cache"] = {}
+        st.success("Cache de checkout limpiada.")
 
     # Constantes
     BASE_CM = "https://www.masonline.com.ar"
     TIMEOUTS = (3, 20)  # (connect, read)
 
+    # --------------------------------------------
+    # Helpers
+    # --------------------------------------------
     def compute_percent_off(list_price: float, price: float):
         """Devuelve % off entero si price < list_price."""
         try:
@@ -439,9 +452,9 @@ with tab_chango:
                     return it
         return items[0] if items else None
 
-    # ----------------------------
+    # --------------------------------------------
     # ✅ Checkout optimizado (1 carrito + updates)
-    # ----------------------------
+    # --------------------------------------------
     def create_orderform(session: requests.Session, headers: dict):
         url = f"{BASE_CM}/api/checkout/pub/orderForm"
         r = session.post(url, headers=headers, json={}, timeout=TIMEOUTS)
@@ -460,10 +473,6 @@ with tab_chango:
         return r.json()
 
     def update_item_qty(session: requests.Session, orderform_id: str, index: int, qty: int, headers: dict):
-        """
-        VTEX: update quantity del item por índice.
-        Nota: 'seller' no siempre es necesario, pero lo incluimos si VTEX lo exige.
-        """
         url = f"{BASE_CM}/api/checkout/pub/orderForm/{orderform_id}/items/update"
         payload = {"orderItems": [{"index": int(index), "quantity": int(qty)}]}
         r = session.post(url, headers=headers, json=payload, timeout=TIMEOUTS)
@@ -482,7 +491,6 @@ with tab_chango:
                 if n:
                     names.append(str(n).strip())
 
-        # dedupe
         out, seen = [], set()
         for n in names:
             if n not in seen:
@@ -510,11 +518,10 @@ with tab_chango:
             simp = [simplify_offer_text(p) for p in promos]
             return " | ".join(dict.fromkeys([s for s in simp if s]))
 
-        # Encontrar índice del item agregado (normalmente 0)
+        # Index del item agregado
         items = of.get("items") or []
         idx = 0
         if items:
-            # confirmamos que sea el sku correcto; si no, igual usamos 0 como fallback
             for i, it in enumerate(items):
                 if str(it.get("id") or "").strip() == str(sku_id):
                     idx = i
@@ -527,7 +534,7 @@ with tab_chango:
             simp = [simplify_offer_text(p) for p in promos]
             return " | ".join(dict.fromkeys([s for s in simp if s]))
 
-        # 3) qty=4 (solo si el usuario lo habilita)
+        # 3) qty=4
         if try_4:
             of = update_item_qty(session, of_id, index=idx, qty=4, headers=headers)
             promos = extract_promos(of)
@@ -536,6 +543,34 @@ with tab_chango:
                 return " | ".join(dict.fromkeys([s for s in simp if s]))
 
         return ""
+
+    # --------------------------------------------
+    # ✅ Cache wrapper (no cambia lógica, solo memoiza)
+    # --------------------------------------------
+    def get_checkout_offer_cached(
+        session: requests.Session,
+        ean: str,
+        sku_id: str,
+        seller_id: str,
+        headers: dict,
+        sc: str,
+        try_4: bool,
+    ):
+        cache = st.session_state["chango_checkout_cache"]
+        key = (str(ean).strip(), str(vtex_segment), str(sc).strip(), bool(try_4))
+
+        if key in cache:
+            return cache[key]
+
+        oferta = detect_offer_via_checkout_fast(
+            session,
+            sku_id=sku_id,
+            seller_id=seller_id,
+            headers=headers,
+            try_4=try_4,
+        )
+        cache[key] = oferta
+        return oferta
 
     st.markdown(f"**Productos cargados:** {len(productos)} (se espera `ean` en cada ítem)")
 
@@ -616,14 +651,16 @@ with tab_chango:
                     if pct:
                         row["Oferta"] = f"{pct}% off"
                     else:
-                        # 2) Mecánicas vía checkout (optimizado): qty=2 -> qty=3 -> opcional qty=4
+                        # 2) Mecánicas vía checkout (optimizado + cacheado): qty=2 -> qty=3 -> opcional qty=4
                         sku_id = str(item_sel.get("itemId") or "").strip()
                         if sku_id:
-                            row["Oferta"] = detect_offer_via_checkout_fast(
+                            row["Oferta"] = get_checkout_offer_cached(
                                 s,
+                                ean=ean,
                                 sku_id=sku_id,
                                 seller_id=seller_id,
                                 headers=headers_cm,
+                                sc=sc,
                                 try_4=try_4x2,
                             )
 
@@ -631,8 +668,7 @@ with tab_chango:
                         st.text(f"OK {ean} | {used_url}")
 
                 except Exception:
-                    # dejamos ListPrice = Sin Precio, Oferta vacío
-                    pass
+                    pass  # dejamos ListPrice = Sin Precio, Oferta vacío
 
                 resultados.append(row)
                 done += 1
@@ -653,6 +689,7 @@ with tab_chango:
                 file_name=f"precios_changomas_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 # ============================================
@@ -1372,6 +1409,7 @@ with tab_hiper:
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
+
 
 
 
