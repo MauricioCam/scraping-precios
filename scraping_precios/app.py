@@ -1751,84 +1751,269 @@ with tab_coope:
 
 
 # ============================================
-# 🔴 HiperLibertad (ListPrice por EAN)
+# 🔴 HiperLibertad (VTEX) — ListPrice + Oferta por EAN (catalog + checkout simulation)
 # ============================================
 with tab_hiper:
-    st.subheader("HiperLibertad · ListPrice por EAN")
+    st.subheader("HiperLibertad · Relevamiento por EAN (ListPrice + Oferta)")
+    st.caption(
+        "1) Busca SKU por **EAN** en catálogo VTEX. "
+        "2) Simula checkout (qty=1/2/3) para obtener **ListPrice/Price** y detectar **ofertas** (messages/benefits o % off)."
+    )
+
+    import requests
+    import pandas as pd
+    from datetime import datetime
+
+    # ✅ listado
+    from listado_libertad import productos
 
     BASE_HIPER = "https://www.hiperlibertad.com.ar"
     SC_DEFAULT = "1"  # política comercial usual (?sc=1)
+
     HEADERS_HIPER = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) PythonRequests/2.x",
         "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json",
     }
-    TIMEOUT = (3, 8)  # (connect, read) — timeouts optimizados
 
-    def _fetch_catalog_by_ean(ean: str, sc: str = SC_DEFAULT):
+    TIMEOUT = (3, 10)  # (connect, read)
+
+    # ----------------------------
+    # Helpers
+    # ----------------------------
+    def _safe_int(x, default=0):
+        try:
+            return int(x)
+        except Exception:
+            return default
+
+    def _safe_float(x, default=0.0):
+        try:
+            return float(x)
+        except Exception:
+            return default
+
+    def _pct_off(list_price: float, selling_price: float) -> int:
+        """Devuelve % off redondeado (entero)."""
+        try:
+            if list_price <= 0 or selling_price <= 0:
+                return 0
+            if selling_price >= list_price:
+                return 0
+            return int(round((1.0 - (selling_price / list_price)) * 100))
+        except Exception:
+            return 0
+
+    def _fetch_catalog_by_ean(session: requests.Session, ean: str, sc: str = SC_DEFAULT):
+        """Devuelve (prod, item_sel) o (None, None)."""
         if not ean:
-            return None
+            return None, None
+
         url = f"{BASE_HIPER}/api/catalog_system/pub/products/search"
         params = {"fq": f"alternateIds_Ean:{ean}", "sc": sc}
-        r = requests.get(url, headers=HEADERS_HIPER, params=params, timeout=TIMEOUT)
+
+        r = session.get(url, headers=HEADERS_HIPER, params=params, timeout=TIMEOUT)
+        if r.status_code != 200:
+            return None, None
+
+        try:
+            data = r.json()
+        except Exception:
+            return None, None
+
+        if not isinstance(data, list) or not data:
+            return None, None
+
+        prod = data[0]
+        items = prod.get("items") or []
+
+        # pick: match item.ean; fallback first
+        item_sel = None
+        for it in items:
+            if str(it.get("ean") or "").strip() == ean:
+                item_sel = it
+                break
+        if not item_sel and items:
+            item_sel = items[0]
+
+        return prod, item_sel
+
+    def _simulate_checkout(session: requests.Session, sku_id: str, seller_id: str = "1", sc: str = SC_DEFAULT, qty: int = 1):
+        """
+        VTEX checkout simulation.
+        Devuelve json o None.
+        """
+        url = f"{BASE_HIPER}/api/checkout/pub/orderForms/simulation"
+        params = {"sc": sc}
+        payload = {"items": [{"id": str(sku_id), "quantity": int(qty), "seller": str(seller_id)}], "country": "ARG"}
+
+        r = session.post(url, headers=HEADERS_HIPER, params=params, json=payload, timeout=TIMEOUT)
         if r.status_code != 200:
             return None
         try:
-            js = r.json()
-            return js if isinstance(js, list) and js else None
+            return r.json()
         except Exception:
             return None
 
-    def _extract_list_price_only(js) -> float:
-        try:
-            # Prioridad: primer ListPrice > 0
-            for prod in js:
-                for item in (prod.get("items") or []):
-                    for seller in (item.get("sellers") or []):
-                        co = seller.get("commertialOffer") or {}
-                        lp = co.get("ListPrice")
-                        if isinstance(lp, (int, float)) and lp > 0:
-                            return float(lp)
-            # Si no hubo >0, devolver 0 si hay numérico
-            for prod in js:
-                for item in (prod.get("items") or []):
-                    for seller in (item.get("sellers") or []):
-                        co = seller.get("commertialOffer") or {}
-                        lp = co.get("ListPrice")
-                        if isinstance(lp, (int, float)):
-                            return float(lp)  # probablemente 0.0
-        except Exception:
-            pass
-        return 0.0
+    def _extract_offer_text_from_sim(sim_json) -> str:
+        """
+        Oferta desde:
+        - messages[]
+        - ratesAndBenefitsData.rateAndBenefitsIdentifiers[].name
+        """
+        if not isinstance(sim_json, dict):
+            return ""
 
-    if st.button("🔎 Ejecutar relevamiento (HiperLibertad)"):
+        # 1) messages (lo más directo)
+        msgs = sim_json.get("messages")
+        if isinstance(msgs, list) and msgs:
+            clean = [str(m).strip() for m in msgs if str(m).strip()]
+            if clean:
+                # evitamos textos repetidos
+                uniq = []
+                for x in clean:
+                    if x not in uniq:
+                        uniq.append(x)
+                return " | ".join(uniq)
+
+        # 2) rateAndBenefitsIdentifiers
+        rbd = sim_json.get("ratesAndBenefitsData") or {}
+        ids = rbd.get("rateAndBenefitsIdentifiers")
+        if isinstance(ids, list) and ids:
+            names = []
+            for it in ids:
+                if isinstance(it, dict):
+                    nm = str(it.get("name") or "").strip()
+                    if nm:
+                        names.append(nm)
+            if names:
+                uniq = []
+                for x in names:
+                    if x not in uniq:
+                        uniq.append(x)
+                return " | ".join(uniq)
+
+        return ""
+
+    def _extract_unit_prices_from_sim(sim_json):
+        """
+        En simulation, items vienen en centavos:
+        - items[0].listPrice
+        - items[0].sellingPrice
+        - items[0].price (a veces = listPrice)
+        Devuelve (list_price, selling_price) en ARS (float).
+        """
+        if not isinstance(sim_json, dict):
+            return 0.0, 0.0
+
+        items = sim_json.get("items")
+        if not isinstance(items, list) or not items:
+            return 0.0, 0.0
+
+        it0 = items[0] if isinstance(items[0], dict) else {}
+        lp_cents = _safe_int(it0.get("listPrice"), 0)
+        sp_cents = _safe_int(it0.get("sellingPrice"), 0)
+
+        # pasar a ARS
+        lp = lp_cents / 100.0 if lp_cents else 0.0
+        sp = sp_cents / 100.0 if sp_cents else 0.0
+        return lp, sp
+
+    # ----------------------------
+    # UI
+    # ----------------------------
+    if st.button("🔴 Ejecutar relevamiento (HiperLibertad)"):
         with st.spinner("⏳ Relevando HiperLibertad..."):
-            filas = []
+            s = requests.Session()
+
+            resultados = []
             total = len(productos)
             prog = st.progress(0, text="Procesando…")
+            done = 0
 
-            for i, (nombre, meta) in enumerate(productos.items(), start=1):
+            for nombre, meta in productos.items():
+                empresa = str(meta.get("empresa", "")).strip()
+                categoria = str(meta.get("categoría", "")).strip()
+                subcategoria = str(meta.get("subcategoría", "")).strip()
+                marca = str(meta.get("marca", "")).strip()
                 ean = str(meta.get("ean", "")).strip()
+
+                row = {
+                    "Empresa": empresa,
+                    "Categoría": categoria,
+                    "Subcategoría": subcategoria,
+                    "Marca": marca,
+                    "Nombre": nombre,
+                    "EAN": ean,
+                    "ListPrice": "Revisar",
+                    "Oferta": "",
+                }
+
                 try:
-                    js = _fetch_catalog_by_ean(ean, sc=SC_DEFAULT)
-                    if js:
-                        lp = _extract_list_price_only(js)
-                        precio_fmt = format_ar_price_no_thousands(lp) if lp is not None else "0,00"
-                    else:
-                        precio_fmt = "Revisar"
+                    if not ean:
+                        resultados.append(row)
+                        done += 1
+                        prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
+                        continue
+
+                    prod, item_sel = _fetch_catalog_by_ean(s, ean, sc=SC_DEFAULT)
+                    if not prod or not item_sel:
+                        resultados.append(row)
+                        done += 1
+                        prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
+                        continue
+
+                    sku_id = str(item_sel.get("itemId") or "").strip()
+                    if not sku_id:
+                        resultados.append(row)
+                        done += 1
+                        prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
+                        continue
+
+                    # Nombre real si existe
+                    row["Nombre"] = str(prod.get("productName") or nombre).strip()
+
+                    # 1) checkout qty=1: base prices
+                    sim1 = _simulate_checkout(s, sku_id, seller_id="1", sc=SC_DEFAULT, qty=1)
+                    lp1, sp1 = _extract_unit_prices_from_sim(sim1)
+
+                    if lp1 > 0:
+                        row["ListPrice"] = format_ar_price_no_thousands(lp1)
+
+                    # 2) checkout qty=2/3: buscar mensajes de promo
+                    sim2 = _simulate_checkout(s, sku_id, seller_id="1", sc=SC_DEFAULT, qty=2)
+                    sim3 = _simulate_checkout(s, sku_id, seller_id="1", sc=SC_DEFAULT, qty=3)
+
+                    offer_txt = _extract_offer_text_from_sim(sim2) or _extract_offer_text_from_sim(sim3)
+
+                    # 3) si no hay mensajes/beneficios, inferir % off por diferencia lp vs sp en qty=1
+                    if not offer_txt:
+                        pct = _pct_off(lp1, sp1)
+                        if pct > 0:
+                            offer_txt = f"{pct}% off"
+
+                    row["Oferta"] = offer_txt
+
                 except Exception:
-                    precio_fmt = "Revisar"
+                    # dejar Revisar / vacío
+                    pass
 
-                filas.append({"EAN": ean, "Nombre": nombre, "ListPrice": precio_fmt})
-                prog.progress(i / max(1, total), text=f"Procesando… {i}/{total}")
+                resultados.append(row)
+                done += 1
+                prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
 
-            dfh = pd.DataFrame(filas, columns=["EAN", "Nombre", "ListPrice"])
+            df = pd.DataFrame(
+                resultados,
+                columns=["Empresa", "Categoría", "Subcategoría", "Marca", "Nombre", "EAN", "ListPrice", "Oferta"],
+            )
+
             st.success("✅ Relevamiento HiperLibertad completado")
-            st.dataframe(dfh, use_container_width=True)
+            st.dataframe(df, use_container_width=True)
 
             fecha = datetime.now().strftime("%Y-%m-%d")
             st.download_button(
-                "⬇ Descargar CSV (HiperLibertad)",
-                dfh.to_csv(index=False).encode("utf-8"),
+                label="⬇ Descargar CSV (HiperLibertad)",
+                data=df.to_csv(index=False).encode("utf-8"),
                 file_name=f"precios_hiperlibertad_{fecha}.csv",
                 mime="text/csv",
             )
