@@ -1,32 +1,221 @@
-import streamlit as st
+# app_relevar_mercado.py
+# Streamlit — Sección “Relevar Mercado” (ListPrice por cadena)
+# Requisitos: pip install streamlit requests pandas
+# Ejecutar:   streamlit run app_relevar_mercado.py
+
+import time
+import re
+from datetime import datetime
+
 import pandas as pd
 import requests
-from datetime import datetime
-from urllib.parse import urljoin
+import streamlit as st
 
-# ============================================
-# Config app
-# ============================================
-st.set_page_config(page_title="📊 Relevamiento de Precios", layout="wide")
-st.title("📊 Relevamiento de Precios")
-st.caption("Esta herramienta tiene por objetivo relevar los precios de todo el portfolio de forma automática")
 
-# ============================================
-# Datos de entrada (diccionario compartido)
-# ============================================
-from productos_streamlit import productos  # {"Nombre": {"ean": "...", "productId": "..."}}
+# =========================
+# Config
+# =========================
+st.set_page_config(page_title="📊 Relevamiento de Mercado", layout="wide")
+st.title("📊 Relevar Mercado")
+st.caption("Consulta el **ListPrice** del mismo listado de EANs en todas las cadenas.")
 
-# ============================================
-# Utilidades comunes
-# ============================================
+TIMEOUT = (4, 18)
+DISPERSION_THRESHOLD_ARS = 500
+
+
+# =========================
+# Input único
+# =========================
+from consolidado_comparativos import productos
+st.markdown(f"**Productos cargados:** {len(productos)}")
+
+
+# =========================
+# Utils comunes
+# =========================
 def format_ar_price_no_thousands(value):
     """1795.0 -> '1795,00' (sin separador de miles)."""
     if value is None:
-        return None
-    return f"{float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", "")
+        return ""
+    try:
+        return f"{float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", "")
+    except Exception:
+        return ""
 
-def coerce_first(x):
-    return (x[0] if isinstance(x, list) and x else x)
+
+def safe_float(x):
+    try:
+        if x is None or x == "":
+            return None
+        return float(x)
+    except Exception:
+        return None
+
+
+def parse_ar_price(s: str):
+    """'2069,00' -> 2069.0"""
+    if s is None:
+        return None
+    s = str(s).strip()
+    if not s:
+        return None
+    try:
+        return float(s.replace(".", "").replace(",", "."))
+    except Exception:
+        return None
+
+
+def pick_item_by_ean(items, ean: str):
+    ean = str(ean).strip()
+    for it in items or []:
+        if str(it.get("ean") or "").strip() == ean:
+            return it
+        for ref in (it.get("referenceId") or []):
+            if str(ref.get("Value") or "").strip() == ean:
+                return it
+    return items[0] if items else None
+
+
+# =========================
+# Fetchers por cadena (ListPrice)
+# =========================
+def fetch_carrefour_listprice(session: requests.Session, ean: str) -> str:
+    COOKIE_SEGMENT = (
+        "eyJjYW1wYWlnbnMiOm51bGwsImNoYW5uZWwiOiIxIiwicHJpY2VUYWJsZXMiOm51bGwsInJlZ2lvbklkIjpudWxsLCJ1dG1fY2FtcGFpZ24iOm51bGws"
+        "InV0bV9zb3VyY2UiOm51bGwsInV0bWlfY2FtcGFpZ24iOm51bGwsImN1cnJlbmN5Q29kZSI6IkFSUyIsImN1cnJlbmN5U3ltYm9sIjoiJCIsImNvdW50"
+        "cnlDb2RlIjoiQVJHIiwiY3VsdHVyZUluZm8iOiJlcy1BUiIsImFkbWluX2N1dHR1cmVJbmZvIjoiZXMtQVIiLCJjaGFubmVsUHJpdmFjeSI6InB1YmxpYyJ9"
+    )
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json,text/plain,*/*",
+        "Cookie": f"vtex_segment={COOKIE_SEGMENT}",
+    }
+    url = "https://www.carrefour.com.ar/api/catalog_system/pub/products/search"
+    r = session.get(url, headers=headers, params={"fq": f"alternateIds_Ean:{ean}"}, timeout=TIMEOUT)
+    r.raise_for_status()
+    data = r.json()
+    if not data:
+        return ""
+    prod = data[0]
+    item = pick_item_by_ean(prod.get("items") or [], ean)
+    if not item:
+        return ""
+    sellers = item.get("sellers") or []
+    if not sellers:
+        return ""
+    co = sellers[0].get("commertialOffer") or {}
+    lp = safe_float(co.get("ListPrice"))
+    return format_ar_price_no_thousands(lp) if lp and lp > 0 else ""
+
+
+def fetch_dia_listprice(session: requests.Session, cod_dia: str) -> str:
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json,text/plain,*/*"}
+    url = "https://diaonline.supermercadosdia.com.ar/api/catalog_system/pub/products/search"
+    r = session.get(url, headers=headers, params={"fq": f"skuId:{cod_dia}"}, timeout=TIMEOUT)
+    r.raise_for_status()
+    data = r.json()
+    if not data:
+        return ""
+    prod = data[0]
+    items = prod.get("items") or []
+    item = None
+    for it in items:
+        if str(it.get("itemId") or "").strip() == str(cod_dia).strip():
+            item = it
+            break
+    if not item and items:
+        item = items[0]
+    if not item:
+        return ""
+    sellers = item.get("sellers") or []
+    if not sellers:
+        return ""
+    co = sellers[0].get("commertialOffer") or {}
+    lp = safe_float(co.get("ListPrice"))
+    return format_ar_price_no_thousands(lp) if lp and lp > 0 else ""
+
+
+def fetch_chango_listprice(session: requests.Session, ean: str) -> str:
+    """
+    FIX definitivo:
+    - Masonline/ChangoMás NO soporta fq=ean (400 Invalid Parameter, ean.)
+    - Intentamos: alternateIds_Ean -> alternateIds_RefId -> ft
+    - Si no encuentra: devuelve "" (NO_ENCONTRADO se ve vacío)
+    """
+    BASE_CM = "https://www.masonline.com.ar"
+    DEFAULT_SEGMENT = (
+        "eyJjYW1wYWlnbnMiOm51bGwsImNoYW5uZWwiOiIxIiwicHJpY2VUYWJsZXMiOm51bGwsInJlZ2lvbklkIjoidjIuNDdERkY5REI3QkE5NEEyMEI1ODRGRjYzQTA3RUIxQ0EiLCJ1dG1fY2FtcGFpZ24iOm51bGwsInV0bV9zb3VyY2UiOm51bGwsInV0bWlfY2FtcGFpZ24iOm51bGwsImN1cnJlbmN5Q29kZSI6IkFSUyIsImN1cnJlbmN5U3ltYm9sIjoiJCIsImNvdW50cnlDb2RlIjoiQVJHIiwiY3VsdHVyZUluZm8iOiJlcy1BUiIsImNoYW5uZWxQcml2YWN5IjoicHVibGljIn0"
+    )
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json,text/plain,*/*",
+        "Cookie": f"vtex_segment={DEFAULT_SEGMENT}",
+    }
+
+    url = f"{BASE_CM}/api/catalog_system/pub/products/search"
+    ean = str(ean).strip()
+    sc = "1"
+
+    attempts = [
+        {"fq": f"alternateIds_Ean:{ean}", "sc": sc},
+        {"fq": f"alternateIds_RefId:{ean}", "sc": sc},
+        {"ft": ean, "sc": sc},
+    ]
+
+    for params in attempts:
+        r = session.get(url, headers=headers, params=params, timeout=TIMEOUT)
+        if r.status_code != 200:
+            continue
+        try:
+            data = r.json()
+        except Exception:
+            continue
+        if not isinstance(data, list) or not data:
+            continue
+
+        prod = data[0] or {}
+        items = prod.get("items") or []
+        item = pick_item_by_ean(items, ean) or (items[0] if items else None)
+        if not item:
+            return ""
+
+        sellers = item.get("sellers") or []
+        if not sellers:
+            return ""
+
+        co = sellers[0].get("commertialOffer") or {}
+        lp = safe_float(co.get("ListPrice"))
+        return format_ar_price_no_thousands(lp) if lp and lp > 0 else ""
+
+    return ""
+
+
+# ---- Coto helpers ----
+def cast_price(val):
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+
+    s = str(val).strip()
+    if not s:
+        return None
+
+    s = s.replace("c/u", "").replace("c\\u002fu", "")
+    s = re.sub(r"[^\d\.,-]", "", s)
+    if not s:
+        return None
+
+    if s.count(",") == 1 and s.count(".") >= 1 and s.rfind(",") > s.rfind("."):
+        s = s.replace(".", "").replace(",", ".")
+    elif s.count(",") == 1 and s.count(".") == 0:
+        s = s.replace(",", ".")
+
+    try:
+        return float(s)
+    except Exception:
+        return None
+
 
 def find_key_recursive(obj, key):
     if isinstance(obj, dict):
@@ -43,9 +232,14 @@ def find_key_recursive(obj, key):
                 return r
     return None
 
+
+def coerce_first(x):
+    return (x[0] if isinstance(x, list) and x else x)
+
+
 def iter_records(node):
     if isinstance(node, dict):
-        if any(k in node for k in ("record.id","product.repositoryId","product.displayName","product.eanPrincipal")):
+        if any(k in node for k in ("record.id", "product.repositoryId", "product.displayName", "product.eanPrincipal")):
             yield node
         for v in node.values():
             yield from iter_records(v)
@@ -53,765 +247,292 @@ def iter_records(node):
         for it in node:
             yield from iter_records(it)
 
-# ============================================
-# Pestañas
-# ============================================
-tab_carrefour, tab_dia, tab_chango, tab_coto, tab_jumbo, tab_vea, tab_coope, tab_hiper = st.tabs(["🛒 Carrefour", "🟥 Día", "🟢 ChangoMás", "🏷️ Coto", "🟢 Jumbo", "🟢 Vea", "🟡 Cooperativa", "🔴 Libertad"])
 
-# ============================================
-# 🛒 Carrefour (por EAN)
-# ============================================
-with tab_carrefour:
-    st.subheader("Carrefour · Hiper Olivos")
-    st.write("Relevamiento automático de todos los SKUs, aplicando la sucursal **Hiper Olivos**. (Ahora busca por **EAN**)")
-
-    # --- Cookie / headers Carrefour (VTEX)
-    COOKIE_SEGMENT = (
-        "eyJjYW1wYWlnbnMiOm51bGwsImNoYW5uZWwiOiIxIiwicHJpY2VUYWJsZXMiOm51bGwsInJlZ2lvbklkIjpudWxsLCJ1dG1fY2FtcGFpZ24iOm51bGws"
-        "InV0bV9zb3VyY2UiOm51bGwsInV0bWlfY2FtcGFpZ24iOm51bGwsImN1cnJlbmN5Q29kZSI6IkFSUyIsImN1cnJlbmN5U3ltYm9sIjoiJCIsImNvdW50"
-        "cnlDb2RlIjoiQVJHIiwiY3VsdHVyZUluZm8iOiJlcy1BUiIsImFkbWluX2N1dHR1cmVJbmZvIjoiZXMtQVIiLCJjaGFubmVsUHJpdmFjeSI6InB1YmxpYyJ9"
-    )
-    HEADERS_CARR = {
-        "User-Agent": "Mozilla/5.0",
-        "Cookie": f"vtex_segment={COOKIE_SEGMENT}",
-        "Accept": "application/json,text/plain,*/*",
-    }
-
-    if st.button("🔍 Ejecutar relevamiento (Carrefour)"):
-        with st.spinner("⏳ Relevando Carrefour..."):
-            resultados = []
-            for nombre, datos in productos.items():
-                ean = str(datos.get("ean") or "").strip()
-                try:
-                    if not ean:
-                        resultados.append({"EAN": "", "Nombre": nombre, "Precio": "Revisar"})
-                        continue
-
-                    # Buscar por EAN en VTEX
-                    url = f"https://www.carrefour.com.ar/api/catalog_system/pub/products/search?fq=alternateIds_Ean:{ean}"
-                    r = requests.get(url, headers=HEADERS_CARR, timeout=12)
-                    data = r.json()
-
-                    if not data:
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
-                        continue
-
-                    prod = data[0]
-                    items = prod.get("items") or []
-
-                    # Elegimos el item que matchee el EAN (ean o referenceId.Value). Si no, el primero.
-                    item_sel = None
-                    for it in items:
-                        if str(it.get("ean") or "").strip() == ean:
-                            item_sel = it
-                            break
-                        for ref in (it.get("referenceId") or []):
-                            if str(ref.get("Value") or "").strip() == ean:
-                                item_sel = it
-                                break
-                        if item_sel:
-                            break
-                    if not item_sel and items:
-                        item_sel = items[0]
-
-                    if not item_sel or not item_sel.get("sellers"):
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
-                        continue
-
-                    offer = item_sel["sellers"][0].get("commertialOffer", {})
-                    price_list = float(offer.get("ListPrice") or 0)
-                    price = float(offer.get("Price") or 0)
-                    final_price = price_list if price_list > 0 else price
-
-                    if final_price and final_price > 0:
-                        precio_formateado = format_ar_price_no_thousands(final_price)
-                        nombre_prod = prod.get("productName") or nombre
-                        resultados.append({"EAN": ean, "Nombre": nombre_prod, "Precio": precio_formateado})
-                    else:
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
-
-                except Exception:
-                    resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
-
-            df = pd.DataFrame(resultados, columns=["EAN", "Nombre", "Precio"])
-            st.success("✅ Relevamiento Carrefour completado")
-            st.dataframe(df, use_container_width=True)
-
-            fecha = datetime.now().strftime("%Y-%m-%d")
-            st.download_button(
-                label="⬇ Descargar CSV (Carrefour)",
-                data=df.to_csv(index=False).encode('utf-8'),
-                file_name=f"precios_carrefour_{fecha}.csv",
-                mime="text/csv",
-            )
-
-# ============================================
-# 🟥 Día
-# ============================================
-with tab_dia:
-    st.subheader("Día · Relevamiento por cod_dia (skuId)")
-    st.caption("Consulta VTEX por **skuId (cod_dia)** y toma **commertialOffer.ListPrice** del primer item/seller.")
-
-    HEADERS_DIA = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json,text/plain,*/*",
-    }
-
-    if st.button("🔴 Ejecutar relevamiento (Día)"):
-        with st.spinner("⏳ Relevando Día..."):
-            resultados = []
-            for nombre, datos in productos.items():
-                cod_dia = str(datos.get("cod_dia") or "").strip()
-                ean = datos.get("ean")
-                try:
-                    if not cod_dia:
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
-                        continue
-
-                    # VTEX search por skuId (cod_dia)
-                    url = f"https://diaonline.supermercadosdia.com.ar/api/catalog_system/pub/products/search?fq=skuId:{cod_dia}"
-                    r = requests.get(url, headers=HEADERS_DIA, timeout=12)
-                    r.raise_for_status()
-                    data = r.json()
-
-                    if not data:
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
-                        continue
-
-                    prod = data[0]
-                    items = prod.get("items") or []
-
-                    # Elegimos el item cuyo itemId == cod_dia; si no aparece, usamos el primero
-                    item_sel = None
-                    for it in items:
-                        if str(it.get("itemId") or "").strip() == cod_dia:
-                            item_sel = it
-                            break
-                    if not item_sel and items:
-                        item_sel = items[0]
-
-                    if not item_sel:
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
-                        continue
-
-                    offer = (item_sel.get("sellers") or [{}])[0].get("commertialOffer", {}) if item_sel.get("sellers") else {}
-                    list_price = offer.get("ListPrice", 0) or 0
-
-                    if list_price > 0:
-                        precio_formateado = format_ar_price_no_thousands(list_price)
-                        nombre_prod = prod.get("productName") or nombre
-                        resultados.append({"EAN": ean, "Nombre": nombre_prod, "Precio": precio_formateado})
-                    else:
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
-
-                except Exception:
-                    resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
-
-            df = pd.DataFrame(resultados, columns=["EAN", "Nombre", "Precio"])
-            st.success("✅ Relevamiento Día completado")
-            st.dataframe(df, use_container_width=True)
-
-            fecha = datetime.now().strftime("%Y-%m-%d")
-            st.download_button(
-                label="⬇ Descargar CSV (Día)",
-                data=df.to_csv(index=False).encode("utf-8"),
-                file_name=f"precios_dia_{fecha}.csv",
-                mime="text/csv",
-            )
-    
-# ============================================
-# 🟢 ChangoMás (por RefId)
-# ============================================
-with tab_chango:
-    st.subheader("ChangoMás · Relevamiento por RefId (VTEX)")
-    st.caption("Consulta por **RefId** usando VTEX Search (`alternateIds_RefId`). Early exit + timeouts cortos. Sin SC alternativos.")
-
-    # Parámetros
-    DEFAULT_SEGMENT = (
-        "eyJjYW1wYWlnbnMiOm51bGwsImNoYW5uZWwiOiIxIiwicHJpY2VUYWJsZXMiOm51bGwsInJlZ2lvbklkIjoidjIuNDdERkY5REI3QkE5NEEyMEI1ODRGRjYzQTA3RUIxQ0EiLCJ1dG1fY2FtcGFpZ24iOm51bGwsInV0bV9zb3VyY2UiOm51bGwsInV0bWlfY2FtcGFpZ24iOm51bGwsImN1cnJlbmN5Q29kZSI6IkFSUyIsImN1cnJlbmN5U3ltYm9sIjoiJCIsImNvdW50cnlDb2RlIjoiQVJHIiwiY3VsdHVyZUluZm8iOiJlcy1BUiIsImFkbWluX2N1bHR1cmVJbmZvIjoiZXMtQVIiLCJjaGFubmVsUHJpdmFjeSI6InB1YmxpYyJ9"
-    )
-    vtex_segment = st.text_input("vtex_segment (ChangoMás)", value=DEFAULT_SEGMENT, type="password")
-    sc_primary = st.text_input("Sales channel (sc)", value="1", help="Canal de ventas VTEX, ej: 1")
-    show_debug_cm = st.checkbox("Mostrar requests (debug)", value=False)
-
-    # Constantes
-    BASE_CM = "https://www.masonline.com.ar"
-    TIMEOUTS = (3, 7)  # (connect, read)
-
-    def first_listprice_or_price(item: dict) -> float:
-        best_price = 0.0
-        for seller in (item.get("sellers") or []):
-            co = seller.get("commertialOffer") or {}
-            lp = float(co.get("ListPrice") or 0)
-            if lp > 0:
-                return lp  # 🎯 early exit
-            p = float(co.get("Price") or 0)
-            if p > best_price:
-                best_price = p
-        return best_price
-
-    def vt_search_by_refid(session: requests.Session, refid: str, sc: str, headers: dict):
-        url = f"{BASE_CM}/api/catalog_system/pub/products/search"
-        params = {"fq": f"alternateIds_RefId:{refid}", "sc": sc}
-        r = session.get(url, headers=headers, params=params, timeout=TIMEOUTS)
-        if show_debug_cm:
-            st.text(f"SEARCH {sc}: {r.url} | {r.status_code} | {r.headers.get('content-type')}")
-        r.raise_for_status()
-        data = r.json()
-        if not data:
-            return None, None
-        prod = data[0]
-        items = prod.get("items", []) or []
-        return prod, items
-
-    def vt_variations_price(session: requests.Session, product_id: str, refid: str, sc: str, headers: dict):
-        url = f"{BASE_CM}/api/catalog_system/pub/products/variations/{product_id}"
-        params = {"sc": sc}
-        r = session.get(url, headers=headers, params=params, timeout=TIMEOUTS)
-        if show_debug_cm:
-            st.text(f"VARIATIONS {sc}: {r.url} | {r.status_code}")
-        r.raise_for_status()
-        data = r.json()
-        name = data.get("name")
-        for sku in (data.get("skus") or []):
-            refids = [str(x.get("Value")) for x in (sku.get("referenceId") or []) if isinstance(x, dict)]
-            if str(refid) in refids or not refids:
-                lp = float(sku.get("listPrice") or 0)
-                if lp > 0:
-                    return name, lp
-                bp = float(sku.get("bestPrice") or 0)
-                return name, (bp if bp > 0 else None)
-        return name, None
-
-    st.markdown(f"**Productos cargados:** {len(productos)} (se espera `cod_maso` en cada ítem)")
-
-    if st.button("🟢 Ejecutar relevamiento (ChangoMás por RefId)"):
-        with st.spinner("⏳ Relevando ChangoMás..."):
-            s = requests.Session()
-            headers_cm = {
-                "User-Agent": "Mozilla/5.0",
-                "Cookie": f"vtex_segment={vtex_segment}",
-                "Accept": "application/json,text/plain,*/*",
-            }
-
-            resultados = []
-            total = len(productos)
-            prog = st.progress(0, text="Procesando…")
-            done = 0
-
-            for nombre, datos in productos.items():
-                refid = str(datos.get("cod_maso", "")).strip()  # ⚠️ clave esperada
-                ean   = str(datos.get("ean", "")).strip()
-                if not refid:
-                    resultados.append({"EAN": ean, "RefId": "", "Nombre": nombre, "Precio": "Revisar"})
-                    done += 1
-                    prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
-                    continue
-
-                row = {"EAN": ean, "RefId": refid, "Nombre": nombre, "Precio": "Revisar"}
-                try:
-                    found_price = None
-                    found_name = None
-
-                    prod, items = vt_search_by_refid(s, refid, sc_primary.strip(), headers_cm)
-                    if prod and items:
-                        # Item cuyo RefId coincida; si no, el primero
-                        item_sel = None
-                        for it in items:
-                            for rfi in (it.get("referenceId") or []):
-                                if str(rfi.get("Value", "")).strip() == refid:
-                                    item_sel = it
-                                    break
-                            if item_sel:
-                                break
-                        if not item_sel and items:
-                            item_sel = items[0]
-
-                        price_num = first_listprice_or_price(item_sel) if item_sel else 0.0
-                        found_name = prod.get("productName") or nombre
-
-                        if price_num <= 0:
-                            pid = str(prod.get("productId") or "").strip()
-                            if pid:
-                                v_name, v_price = vt_variations_price(s, pid, refid, sc_primary.strip(), headers_cm)
-                                if v_price:
-                                    price_num = v_price
-                                    found_name = v_name or found_name
-
-                        if price_num > 0:
-                            found_price = price_num
-
-                    if found_price is not None:
-                        # 👇 Nuevo: si el precio supera 1.000.000, marcar "Revisar"
-                        if float(found_price) > 1_000_000:
-                            row["Precio"] = "Revisar"
-                            row["Nombre"] = found_name or nombre
-                        else:
-                            row["Precio"] = format_ar_price_no_thousands(found_price)
-                            row["Nombre"] = found_name or nombre
-
-                except Exception:
-                    pass  # dejamos "Revisar"
-
-                resultados.append(row)
-                done += 1
-                prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
-
-            df = pd.DataFrame(resultados, columns=["EAN", "RefId", "Nombre", "Precio"])
-            st.success("✅ Relevamiento ChangoMás completado")
-            st.dataframe(df, use_container_width=True)
-
-            fecha = datetime.now().strftime("%Y-%m-%d")
-            st.download_button(
-                label="⬇ Descargar CSV (ChangoMás)",
-                data=df.to_csv(index=False).encode("utf-8"),
-                file_name=f"precios_changomas_{fecha}.csv",
-                mime="text/csv",
-            )
-
-
-# ============================================
-# 🏷️ Coto
-# ============================================
-with tab_coto:
-    st.subheader("Coto · Relevamiento por EAN")
-    st.caption("Flujo: búsqueda (Ntk=product.eanPrincipal) → record.id → detalle (format=json) → sku.activePrice")
-
-    # Constantes / headers Coto
+def fetch_coto_listprice(session: requests.Session, ean: str, sucursal: str = "200") -> str:
     BASE = "https://www.cotodigital.com.ar"
-    SEARCH_CATEGORIA = "/sitios/cdigi/categoria"
-    DEFAULT_SUCURSAL = "200"
-    HEADERS_COTO = {
-        "User-Agent": "Mozilla/5.0",
+    SEARCH = f"{BASE}/sitios/cdigi/categoria"
+
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
         "Accept": "application/json,text/plain,*/*",
         "Accept-Language": "es-AR,es;q=0.9,en;q=0.8",
         "Connection": "keep-alive",
+        "DNT": "1",
+        "Referer": BASE + "/",
+        "Origin": BASE,
+    })
+
+    # warm-up cookies
+    try:
+        session.get(BASE + "/", timeout=TIMEOUT)
+    except Exception:
+        pass
+
+    params = {"Dy": "1", "Ntt": ean, "Ntk": "product.eanPrincipal", "idSucursal": sucursal, "format": "json"}
+    r = session.get(SEARCH, params=params, timeout=TIMEOUT)
+    if r.status_code == 403:
+        return ""
+    r.raise_for_status()
+    data = r.json()
+
+    record_id = None
+    for rec in iter_records(data):
+        e = coerce_first(find_key_recursive(rec, "product.eanPrincipal"))
+        if str(e) == str(ean):
+            record_id = coerce_first(find_key_recursive(rec, "record.id"))
+            break
+    if not record_id:
+        return ""
+
+    product_url = f"{BASE}/sitios/cdigi/productos/_/R-{record_id}"
+    detail_url = f"{product_url}?Dy=1&idSucursal={sucursal}&format=json"
+
+    headers_detail = dict(session.headers)
+    headers_detail["Referer"] = product_url
+
+    r2 = session.get(detail_url, headers=headers_detail, timeout=TIMEOUT)
+    if r2.status_code == 403:
+        return ""
+    r2.raise_for_status()
+
+    det = r2.json()
+    raw_list = coerce_first(find_key_recursive(det, "sku.activePrice"))
+    lp = cast_price(raw_list)
+    return format_ar_price_no_thousands(lp) if lp and lp > 0 else ""
+
+
+def fetch_jumbo_listprice(session: requests.Session, ean: str) -> str:
+    BASE = "https://www.jumbo.com.ar"
+    SC = "32"
+    VTEX_SEGMENT = (
+        "eyJjYW1wYWlnbnMiOm51bGwsImNoYW5uZWwiOiIzMiIsInByaWNlVGFibGVzIjpudWxsLCJyZWdpb25JZCI6bnVsbCwidXRtX2NhbXBhaWduIjpudWxsLCJ1dG1fc291cmNlIjpudWxsLCJ1dG1pX2NhbXBhaWduIjpudWxsLCJjdXJyZW5jeUNvZGUiOiJBUlMiLCJjdXJyZW5jeVN5bWJvbCI6IiQiLCJjb3VudHJ5Q29kZSI6IkFSRyIsImN1bHR1cmVJbmZvIjoiZXMtQVIiLCJjaGFubmVsUHJpdmFjeSI6InB1YmxpYyJ9"
+    )
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json,text/plain,*/*",
+        "Cookie": f"vtex_segment={VTEX_SEGMENT}",
+    }
+    url = f"{BASE}/api/catalog_system/pub/products/search"
+
+    # Jumbo suele aceptar fallback ean, pero lo dejamos por compatibilidad.
+    for fq in (f"alternateIds_Ean:{ean}", f"ean:{ean}"):
+        r = session.get(url, headers=headers, params={"fq": fq, "sc": SC}, timeout=TIMEOUT)
+        r.raise_for_status()
+        data = r.json()
+        if data:
+            prod = data[0]
+            item = pick_item_by_ean(prod.get("items") or [], ean)
+            if not item:
+                return ""
+            sellers = item.get("sellers") or []
+            if not sellers:
+                return ""
+            co = sellers[0].get("commertialOffer") or {}
+            pwd = safe_float(co.get("PriceWithoutDiscount"))
+            price = safe_float(co.get("Price"))
+            lp = pwd if (pwd and pwd > 0) else price
+            return format_ar_price_no_thousands(lp) if lp and lp > 0 else ""
+    return ""
+
+
+def fetch_vea_listprice(session: requests.Session, ean: str) -> str:
+    BASE = "https://www.vea.com.ar"
+    SC = "34"
+    VTEX_SEGMENT = (
+        "eyJjYW1wYWlnbnMiOm51bGwsImNoYW5uZWwiOiIzNCIsInByaWNlVGFibGVzIjpudWxsLCJyZWdpb25JZCI6IlUxY2phblZ0WW05aGNtZGxiblJwYm1GMk56QXdZMjl5Wkc5aVlUY3dNQT09IiwidXRtX2NhbXBhaWduIjpudWxsLCJ1dG1fc291cmNlIjpudWxsLCJ1dG1pX2NhbXBhaWduIjpudWxsLCJjdXJyZW5jeUNvZGUiOiJBUlMiLCJjdXJyZW5jeVN5bWJvbCI6IiQiLCJjb3VudHJ5Q29kZSI6IkFSRyIsImN1bHR1cmVJbmZvIjoiZXMtQVIiLCJhZG1pbl9jdWx0dXJlSW5mbyI6ImVzLUFSIiwiY2hhbm5lbFByaXZhY3kiOiJwdWJsaWMifQ"
+    )
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json,text/plain,*/*",
+        "Cookie": f"vtex_segment={VTEX_SEGMENT}",
+    }
+    url = f"{BASE}/api/catalog_system/pub/products/search"
+
+    r = session.get(url, headers=headers, params={"fq": f"alternateIds_Ean:{ean}", "sc": SC}, timeout=TIMEOUT)
+    r.raise_for_status()
+    data = r.json()
+    if not data:
+        return ""
+    prod = data[0]
+    item = pick_item_by_ean(prod.get("items") or [], ean)
+    if not item:
+        return ""
+    sellers = item.get("sellers") or []
+    if not sellers:
+        return ""
+    co = sellers[0].get("commertialOffer") or {}
+    pwd = safe_float(co.get("PriceWithoutDiscount"))
+    price = safe_float(co.get("Price"))
+    lp = pwd if (pwd and pwd > 0) else price
+    return format_ar_price_no_thousands(lp) if lp and lp > 0 else ""
+
+
+def fetch_coope_listprice(session: requests.Session, cod_coope: str) -> str:
+    url = "https://api.lacoopeencasa.coop/api/articulo/detalle"
+    params = {"cod_interno": cod_coope, "simple": "false"}
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json,text/plain,*/*"}
+
+    r = session.get(url, params=params, headers=headers, timeout=TIMEOUT)
+    r.raise_for_status()
+    j = r.json() if "application/json" in (r.headers.get("content-type") or "").lower() else {}
+    datos = (j or {}).get("datos") or {}
+    lp = safe_float(datos.get("precio_anterior"))
+    return format_ar_price_no_thousands(lp) if lp and lp > 0 else ""
+
+
+def fetch_libertad_listprice(session: requests.Session, ean: str) -> str:
+    BASE = "https://www.hiperlibertad.com.ar"
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json,text/plain,*/*",
+        "Content-Type": "application/json",
     }
 
-    suc = st.text_input("idSucursal (Coto)", value=DEFAULT_SUCURSAL, help="Se aplica a búsqueda y detalle.")
-    show_debug = st.checkbox("Mostrar URLs de detalle (debug)", value=False)
+    url = f"{BASE}/api/catalog_system/pub/products/search"
+    r = session.get(url, headers=headers, params={"fq": f"alternateIds_Ean:{ean}", "sc": "1"}, timeout=TIMEOUT)
+    if r.status_code != 200:
+        return ""
+    data = r.json()
+    if not data:
+        return ""
+    prod = data[0]
+    item = pick_item_by_ean(prod.get("items") or [], ean)
+    if not item:
+        return ""
+    sku_id = str(item.get("itemId") or "").strip()
+    if not sku_id:
+        return ""
 
-    def get_record_id_by_ean(session: requests.Session, ean: str, sucursal: str):
-        params = {"Dy": "1", "Ntt": ean, "Ntk": "product.eanPrincipal", "idSucursal": sucursal, "format": "json"}
-        r = session.get(urljoin(BASE, SEARCH_CATEGORIA), params=params, timeout=20)
-        r.raise_for_status()
-        data = r.json()
+    sim_url = f"{BASE}/api/checkout/pub/orderForms/simulation"
+    payload = {"items": [{"id": sku_id, "quantity": 1, "seller": "1"}], "country": "ARG"}
+    rs = session.post(sim_url, headers=headers, params={"sc": "1"}, json=payload, timeout=TIMEOUT)
+    if rs.status_code != 200:
+        return ""
+    sim = rs.json()
+    items = sim.get("items") or []
+    if not items:
+        return ""
+    lp_cents = items[0].get("listPrice")
+    try:
+        lp = float(lp_cents) / 100.0 if lp_cents else None
+    except Exception:
+        lp = None
+    return format_ar_price_no_thousands(lp) if lp and lp > 0 else ""
 
-        for rec in iter_records(data):
-            e = coerce_first(find_key_recursive(rec, "product.eanPrincipal"))
-            if str(e) == str(ean):
-                rid  = coerce_first(find_key_recursive(rec, "record.id"))
-                name = coerce_first(find_key_recursive(rec, "product.displayName")) \
-                       or coerce_first(find_key_recursive(rec, "record.title"))
-                return rid, (str(name) if name else None)
-        return None, None
 
-    def cast_price(val):
-        if val is None:
-            return None
-        if isinstance(val, (int, float)):
-            return float(val)
-        s = str(val).strip()
-        if s.count(",") == 1 and s.count(".") > 1:  # '1.795,00' -> 1795.00
-            s = s.replace(".", "").replace(",", ".")
-        try:
-            return float(s)
-        except Exception:
-            return None
+# =========================
+# Runner (1 botón + barra progreso + tabla final)
+# =========================
+def compute_dispersion_row(row: dict):
+    vals = []
+    for k, v in row.items():
+        if not k.startswith("ListPrice "):
+            continue
+        n = parse_ar_price(v)
+        if n is not None and n > 0:
+            vals.append(n)
+    if len(vals) < 2:
+        return {"min": None, "max": None, "delta": None}
+    mn, mx = min(vals), max(vals)
+    return {"min": mn, "max": mx, "delta": mx - mn}
 
-    def fetch_detail_by_record_id(session: requests.Session, record_id: str, sucursal: str):
-        product_url = f"{BASE}/sitios/cdigi/productos/_/R-{record_id}"
-        detail_url = f"{product_url}?Dy=1&idSucursal={sucursal}&format=json"
 
-        headers = dict(session.headers)
-        headers["Referer"] = product_url  # ayuda en algunos entornos
-        r = session.get(detail_url, headers=headers, timeout=20)
-        r.raise_for_status()
-        data = r.json()
+def run_market_scan():
+    s = requests.Session()
 
-        ean   = coerce_first(find_key_recursive(data, "product.eanPrincipal"))
-        name  = coerce_first(find_key_recursive(data, "product.displayName"))
-        raw   = coerce_first(find_key_recursive(data, "sku.activePrice"))
+    # Orden de columnas solicitado (sin Subcategoría)
+    base_cols = ["Empresa", "Categoría", "Marca", "Nombre"]
 
-        price = cast_price(raw)
-        if price is None:
-            for alt in ("activePrice","sku.price","sku.listPrice","price","listPrice"):
-                raw_alt = coerce_first(find_key_recursive(data, alt))
-                price = cast_price(raw_alt)
-                if price is not None:
-                    break
+    chain_funcs = [
+        ("Carrefour", lambda meta: fetch_carrefour_listprice(s, meta["ean"])),
+        ("Día", lambda meta: fetch_dia_listprice(s, meta["cod_dia"])),
+        ("ChangoMas", lambda meta: fetch_chango_listprice(s, meta["ean"])),
+        ("Coto", lambda meta: fetch_coto_listprice(s, meta["ean"])),
+        ("Jumbo", lambda meta: fetch_jumbo_listprice(s, meta["ean"])),
+        ("Vea", lambda meta: fetch_vea_listprice(s, meta["ean"])),
+        ("Cooperativa", lambda meta: fetch_coope_listprice(s, meta["cod_coope"])),
+        ("Hiperlibertad", lambda meta: fetch_libertad_listprice(s, meta["ean"])),
+    ]
 
-        return {
+    chain_cols = [f"ListPrice {name}" for name, _ in chain_funcs]
+
+    total_steps = len(productos) * len(chain_funcs)
+    prog = st.progress(0, text="Iniciando relevamiento…")
+    done = 0
+
+    rows = []
+    t0 = time.time()
+
+    for nombre, meta in productos.items():
+        meta = meta or {}
+        ean = str(meta.get("ean") or "").strip()
+        cod_dia = str(meta.get("cod_dia") or "").strip()
+        cod_coope = str(meta.get("cod_coope") or meta.get("cod_coop") or "").strip()
+
+        row = {
+            "Empresa": str(meta.get("empresa") or "").strip(),
+            "Categoría": str(meta.get("categoría") or "").strip(),
+            "Marca": str(meta.get("marca") or "").strip(),
+            "Nombre": str(nombre or "").strip(),
             "ean": ean,
-            "name": name,
-            "price": format_ar_price_no_thousands(price),
-            "detail_url": detail_url,
+            "cod_dia": cod_dia,
+            "cod_coope": cod_coope,
         }
 
-    def scrape_coto_by_items(items, sucursal: str, return_debug=False):
-        s = requests.Session()
-        s.headers.update(HEADERS_COTO)
-        out = []
-        debug_rows = []
-
-        total = len(items)
-        prog = st.progress(0, text="Procesando…")
-        done = 0
-
-        for nombre_ref, ean in items:
-            ean = str(ean).strip()
-            nombre_ref = str(nombre_ref).strip()
-            row = {"EAN": ean, "Nombre del Producto": nombre_ref, "Precio": "Revisar"}  # default pedido
-
+        # precios por cadena (ListPrice)
+        for chain_name, fn in chain_funcs:
+            lp = ""
             try:
-                record_id, name_hint = get_record_id_by_ean(s, ean, sucursal)
-                if record_id:
-                    det = fetch_detail_by_record_id(s, record_id, sucursal)
-                    row["EAN"] = det.get("ean") or ean
-                    row["Nombre del Producto"] = det.get("name") or name_hint or nombre_ref
-                    if det.get("price") is not None:
-                        row["Precio"] = det.get("price")
-                    if return_debug:
-                        debug_rows.append({"EAN": row["EAN"], "detail_url": det.get("detail_url")})
-                # si no hay record_id, dejamos "Revisar" y nombre_ref tal cual
+                lp = fn({"ean": ean, "cod_dia": cod_dia, "cod_coope": cod_coope})
+                # Regla UI: NO_ENCONTRADO se ve vacío
+                if lp == "NO_ENCONTRADO":
+                    lp = ""
             except Exception:
-                pass  # dejamos "Revisar"
+                lp = ""
 
-            out.append(row)
+            row[f"ListPrice {chain_name}"] = lp
+
             done += 1
-            prog.progress(done / max(1, total), text=f"Procesando… {done}/{total}")
+            prog.progress(min(done / max(1, total_steps), 1.0), text=f"Relevando… {done}/{total_steps}")
 
-        return (out, debug_rows) if return_debug else (out, None)
+        rows.append(row)
 
-    if st.button("⚡ Ejecutar relevamiento (Coto)"):
-        # Construimos [(nombre_ref, ean), ...]
-        items = []
-        for nombre, meta in productos.items():
-            ean = str(meta.get("ean", "")).strip()
-            if ean:
-                items.append((nombre, ean))
+    elapsed = time.time() - t0
+    prog.progress(1.0, text=f"Relevamiento completado en {elapsed:.1f}s")
 
-        if not items:
-            st.warning("No hay EANs válidos en productos_streamlit.py")
-        else:
-            rows, dbg = scrape_coto_by_items(items, sucursal=(suc or DEFAULT_SUCURSAL), return_debug=show_debug)
-            df = pd.DataFrame(rows, columns=["EAN", "Nombre del Producto", "Precio"])
-            st.success("✅ Relevamiento Coto completado")
-            st.dataframe(df, use_container_width=True)
+    df = pd.DataFrame(rows)
 
-            if show_debug and dbg:
-                with st.expander("Debug: detalle de URLs llamadas"):
-                    st.dataframe(pd.DataFrame(dbg), use_container_width=True)
+    # Tabla final (solo columnas solicitadas)
+    df_out = df[base_cols + chain_cols].copy()
 
-            fecha = datetime.now().strftime("%Y-%m-%d")
-            st.download_button(
-                "⬇ Descargar CSV (Coto)",
-                df.to_csv(index=False).encode("utf-8"),
-                file_name=f"precios_coto_{fecha}.csv",
-                mime="text/csv",
-            )
-# ============================================
-# 🟢 Jumbo
-# ============================================
-with tab_jumbo:
-    st.subheader("Jumbo · Relevamiento por EAN (VTEX)")
-    st.caption("Consulta por **EAN** y toma **Installments[].Value** del primer item/seller. Sin cookie.")
+    # Alerta de dispersión (opcional, no cambia columnas)
+    disp = []
+    for _, r in df_out.iterrows():
+        d = compute_dispersion_row(r.to_dict())
+        disp.append(d["delta"] if d["delta"] is not None else 0.0)
+    max_delta = max(disp) if disp else 0.0
+    if max_delta and max_delta > DISPERSION_THRESHOLD_ARS:
+        st.warning(f"⚠️ Dispersión alta detectada en al menos 1 ítem: Δ máx = {max_delta:.0f} ARS (umbral {DISPERSION_THRESHOLD_ARS})")
 
-    HEADERS_JUMBO = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json,text/plain,*/*",
-    }
-
-    if st.button("Ejecutar relevamiento (Jumbo)"):
-        with st.spinner("⏳ Relevando Jumbo..."):
-            resultados = []
-            for nombre, datos in productos.items():
-                ean = str(datos.get("ean") or "").strip()
-                try:
-                    if not ean:
-                        resultados.append({"EAN": "", "Nombre": nombre, "Precio": "Revisar"})
-                        continue
-
-                    # VTEX search por EAN
-                    url = f"https://www.jumbo.com.ar/api/catalog_system/pub/products/search?fq=alternateIds_Ean:{ean}"
-                    r = requests.get(url, headers=HEADERS_JUMBO, timeout=12)
-                    data = r.json()
-
-                    if not data:
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
-                        continue
-
-                    prod = data[0]
-                    items = prod.get("items") or []
-
-                    # Elegimos el item que matchee el EAN (ean o referenceId.Value). Si no, el primero.
-                    item_sel = None
-                    for it in items:
-                        if str(it.get("ean") or "").strip() == ean:
-                            item_sel = it
-                            break
-                        for ref in (it.get("referenceId") or []):
-                            if str(ref.get("Value") or "").strip() == ean:
-                                item_sel = it
-                                break
-                        if item_sel:
-                            break
-                    if not item_sel and items:
-                        item_sel = items[0]
-
-                    # Obtenemos Installments[].Value del primer seller
-                    installments = []
-                    try:
-                        installments = (item_sel.get("sellers") or [])[0].get("commertialOffer", {}).get("Installments") or []
-                    except Exception:
-                        installments = []
-
-                    # Tomamos el mayor Value disponible (suele ser 1 cuota, p.ej. American Express)
-                    vals = [float(x.get("Value") or 0) for x in installments if isinstance(x, dict)]
-                    price_val = max(vals) if vals else 0.0
-
-                    if price_val > 0:
-                        precio_formateado = format_ar_price_no_thousands(price_val)
-                        nombre_prod = prod.get("productName") or nombre
-                        resultados.append({"EAN": ean, "Nombre": nombre_prod, "Precio": precio_formateado})
-                    else:
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
-
-                except Exception:
-                    resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
-
-            df = pd.DataFrame(resultados, columns=["EAN", "Nombre", "Precio"])
-            st.success("✅ Relevamiento Jumbo completado")
-            st.dataframe(df, use_container_width=True)
-
-            fecha = datetime.now().strftime("%Y-%m-%d")
-            st.download_button(
-                label="⬇ Descargar CSV (Jumbo)",
-                data=df.to_csv(index=False).encode("utf-8"),
-                file_name=f"precios_jumbo_{fecha}.csv",
-                mime="text/csv",
-            )
-
-# ============================================
-# 🟢 Vea
-# ============================================
-with tab_vea:
-    st.subheader("Vea · Relevamiento por EAN (VTEX)")
-    st.caption("Consulta por **EAN** y toma **Installments[].Value** del primer item/seller. Sin cookie.")
-
-    HEADERS_VEA = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json,text/plain,*/*",
-    }
-
-    if st.button("Ejecutar relevamiento (VEA)"):
-        with st.spinner("⏳ Relevando Vea..."):
-            resultados = []
-            for nombre, datos in productos.items():
-                ean = str(datos.get("ean") or "").strip()
-                try:
-                    if not ean:
-                        resultados.append({"EAN": "", "Nombre": nombre, "Precio": "Revisar"})
-                        continue
-
-                    # VTEX search por EAN
-                    url = f"https://www.vea.com.ar/api/catalog_system/pub/products/search?fq=alternateIds_Ean:{ean}"
-                    r = requests.get(url, headers=HEADERS_VEA, timeout=12)
-                    data = r.json()
-
-                    if not data:
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
-                        continue
-
-                    prod = data[0]
-                    items = prod.get("items") or []
-
-                    # Elegimos el item que matchee el EAN (ean o referenceId.Value). Si no, el primero.
-                    item_sel = None
-                    for it in items:
-                        if str(it.get("ean") or "").strip() == ean:
-                            item_sel = it
-                            break
-                        for ref in (it.get("referenceId") or []):
-                            if str(ref.get("Value") or "").strip() == ean:
-                                item_sel = it
-                                break
-                        if item_sel:
-                            break
-                    if not item_sel and items:
-                        item_sel = items[0]
-
-                    # Obtenemos Installments[].Value del primer seller
-                    installments = []
-                    try:
-                        installments = (item_sel.get("sellers") or [])[0].get("commertialOffer", {}).get("Installments") or []
-                    except Exception:
-                        installments = []
-
-                    # Tomamos el mayor Value disponible (suele ser 1 cuota, p.ej. American Express)
-                    vals = [float(x.get("Value") or 0) for x in installments if isinstance(x, dict)]
-                    price_val = max(vals) if vals else 0.0
-
-                    if price_val > 0:
-                        precio_formateado = format_ar_price_no_thousands(price_val)
-                        nombre_prod = prod.get("productName") or nombre
-                        resultados.append({"EAN": ean, "Nombre": nombre_prod, "Precio": precio_formateado})
-                    else:
-                        resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
-
-                except Exception:
-                    resultados.append({"EAN": ean, "Nombre": nombre, "Precio": "Revisar"})
-
-            df = pd.DataFrame(resultados, columns=["EAN", "Nombre", "Precio"])
-            st.success("✅ Relevamiento Vea completado")
-            st.dataframe(df, use_container_width=True)
-
-            fecha = datetime.now().strftime("%Y-%m-%d")
-            st.download_button(
-                label="⬇ Descargar CSV (Vea)",
-                data=df.to_csv(index=False).encode("utf-8"),
-                file_name=f"precios_vea_{fecha}.csv",
-                mime="text/csv",
-            )
-# ============================================
-# 🟡 Cooperativa Obrera
-# ============================================
-with tab_coope:
-    st.subheader("Cooperativa Obrera · Relevamiento por cod_coope")
-    st.caption("Consulta el endpoint oficial y toma **precio de lista**.")
-
-    HEADERS_COOPE = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json,text/plain,*/*",
-    }
-
-    if st.button("🟡 Ejecutar relevamiento (Cooperativa Obrera)"):
-        with st.spinner("⏳ Relevando Cooperativa Obrera..."):
-            resultados = []
-            for nombre, datos in productos.items():
-                ean = str(datos.get("ean", "")).strip()
-                cod = str(datos.get("cod_coope", "")).strip()
-
-                row = {"EAN": ean, "Nombre": nombre, "Precio": "Revisar"}
-                if not cod:
-                    resultados.append(row)
-                    continue
-
-                try:
-                    url = f"https://api.lacoopeencasa.coop/api/articulo/detalle?cod_interno={cod}&simple=false"
-                    r = requests.get(url, headers=HEADERS_COOPE, timeout=12)
-                    r.raise_for_status()
-                    j = r.json() if r.headers.get("content-type","").startswith("application/json") else {}
-
-                    datos_node = (j or {}).get("datos") or {}
-                    precio_ant = datos_node.get("precio_anterior")
-
-                    # precio_anterior viene como string ("919.00")
-                    val = float(precio_ant) if precio_ant not in (None, "") else 0.0
-
-                    if val > 0:
-                        row["Precio"] = format_ar_price_no_thousands(val)
-
-                except Exception:
-                    pass  # dejamos "Revisar" si falla algo
-
-                resultados.append(row)
-
-            df = pd.DataFrame(resultados, columns=["EAN", "Nombre", "Precio"])
-            st.success("✅ Relevamiento Cooperativa Obrera completado")
-            st.dataframe(df, use_container_width=True)
-
-            fecha = datetime.now().strftime("%Y-%m-%d")
-            st.download_button(
-                label="⬇ Descargar CSV (Cooperativa Obrera)",
-                data=df.to_csv(index=False).encode("utf-8"),
-                file_name=f"precios_cooperativa_{fecha}.csv",
-                mime="text/csv",
-            )
-
-# ============================================
-# 🔴 HiperLibertad (ListPrice por EAN)
-# ============================================
-with tab_hiper:
-    st.subheader("HiperLibertad · ListPrice por EAN")
-
-    BASE_HIPER = "https://www.hiperlibertad.com.ar"
-    SC_DEFAULT = "1"  # política comercial usual (?sc=1)
-    HEADERS_HIPER = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) PythonRequests/2.x",
-        "Accept": "application/json, text/plain, */*",
-    }
-    TIMEOUT = (3, 8)  # (connect, read) — timeouts optimizados
-
-    def _fetch_catalog_by_ean(ean: str, sc: str = SC_DEFAULT):
-        if not ean:
-            return None
-        url = f"{BASE_HIPER}/api/catalog_system/pub/products/search"
-        params = {"fq": f"alternateIds_Ean:{ean}", "sc": sc}
-        r = requests.get(url, headers=HEADERS_HIPER, params=params, timeout=TIMEOUT)
-        if r.status_code != 200:
-            return None
-        try:
-            js = r.json()
-            return js if isinstance(js, list) and js else None
-        except Exception:
-            return None
-
-    def _extract_list_price_only(js) -> float:
-        try:
-            # Prioridad: primer ListPrice > 0
-            for prod in js:
-                for item in (prod.get("items") or []):
-                    for seller in (item.get("sellers") or []):
-                        co = seller.get("commertialOffer") or {}
-                        lp = co.get("ListPrice")
-                        if isinstance(lp, (int, float)) and lp > 0:
-                            return float(lp)
-            # Si no hubo >0, devolver 0 si hay numérico
-            for prod in js:
-                for item in (prod.get("items") or []):
-                    for seller in (item.get("sellers") or []):
-                        co = seller.get("commertialOffer") or {}
-                        lp = co.get("ListPrice")
-                        if isinstance(lp, (int, float)):
-                            return float(lp)  # probablemente 0.0
-        except Exception:
-            pass
-        return 0.0
-
-    if st.button("🔎 Ejecutar relevamiento (HiperLibertad)"):
-        with st.spinner("⏳ Relevando HiperLibertad..."):
-            filas = []
-            total = len(productos)
-            prog = st.progress(0, text="Procesando…")
-
-            for i, (nombre, meta) in enumerate(productos.items(), start=1):
-                ean = str(meta.get("ean", "")).strip()
-                try:
-                    js = _fetch_catalog_by_ean(ean, sc=SC_DEFAULT)
-                    if js:
-                        lp = _extract_list_price_only(js)
-                        precio_fmt = format_ar_price_no_thousands(lp) if lp is not None else "0,00"
-                    else:
-                        precio_fmt = "Revisar"
-                except Exception:
-                    precio_fmt = "Revisar"
-
-                filas.append({"EAN": ean, "Nombre": nombre, "ListPrice": precio_fmt})
-                prog.progress(i / max(1, total), text=f"Procesando… {i}/{total}")
-
-            dfh = pd.DataFrame(filas, columns=["EAN", "Nombre", "ListPrice"])
-            st.success("✅ Relevamiento HiperLibertad completado")
-            st.dataframe(dfh, use_container_width=True)
-
-            fecha = datetime.now().strftime("%Y-%m-%d")
-            st.download_button(
-                "⬇ Descargar CSV (HiperLibertad)",
-                dfh.to_csv(index=False).encode("utf-8"),
-                file_name=f"precios_hiperlibertad_{fecha}.csv",
-                mime="text/csv",
-            )
+    return df_out
 
 
+# =========================
+# UI (1 botón)
+# =========================
+if st.button("🔍 Relevar Mercado"):
+    with st.spinner("⏳ Ejecutando relevamiento…"):
+        df_result = run_market_scan()
 
+    st.success("✅ Relevamiento finalizado")
+    st.dataframe(df_result, use_container_width=True)
 
+    fecha = datetime.now().strftime("%Y-%m-%d_%H%M")
+    st.download_button(
+        label="⬇ Descargar CSV (Mercado)",
+        data=df_result.to_csv(index=False).encode("utf-8"),
+        file_name=f"relevar_mercado_{fecha}.csv",
+        mime="text/csv",
+    )
+else:
+    st.info("Presioná **Relevar Mercado** para consultar el ListPrice en todas las cadenas.")
