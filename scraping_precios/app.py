@@ -3,6 +3,7 @@
 # Cambios:
 # 1) Elimina columna "Empresa"
 # 2) En cada fila, la(s) cadena(s) con menor precio queda(n) en **negrita** (mínimo por fila, ignorando vacíos)
+# 3) NUEVA TABLA debajo: Diferencia % de cada cadena vs Carrefour: (PrecioCadena / PrecioCarrefour - 1)
 
 import time
 import re
@@ -460,6 +461,47 @@ def style_bold_min_prices(df: pd.DataFrame, chain_cols: list[str]):
     return df.style.apply(_row_style, axis=1)
 
 
+def build_pct_vs_carrefour_table(df_prices: pd.DataFrame, chain_cols: list[str]) -> pd.DataFrame:
+    """
+    Construye tabla con diferencia % vs Carrefour:
+      pct = (PrecioCadena / PrecioCarrefour) - 1
+    Reglas:
+      - Si Carrefour vacío/0 -> deja vacíos
+      - Si Cadena vacío -> vacío
+      - Carrefour: vacío (o podrías poner 0%)
+    Devuelve valores como string tipo '+3.2%' (ya formateados).
+    """
+    base_cols = ["Categoría", "Marca", "EAN", "Nombre"]
+    out_rows = []
+
+    def fmt_pct(x):
+        if x is None:
+            return ""
+        try:
+            return f"{x:+.1%}"
+        except Exception:
+            return ""
+
+    for _, r in df_prices.iterrows():
+        car = parse_price_int(r.get("Carrefour"))
+        out = {k: r.get(k, "") for k in base_cols}
+
+        for c in chain_cols:
+            if c == "Carrefour":
+                out[c] = ""  # o "0.0%" si querés
+                continue
+
+            p = parse_price_int(r.get(c))
+            if car is None or car <= 0 or p is None:
+                out[c] = ""
+            else:
+                out[c] = fmt_pct((p / car) - 1.0)
+
+        out_rows.append(out)
+
+    return pd.DataFrame(out_rows, columns=base_cols + chain_cols)
+
+
 def run_market_scan():
     s = requests.Session()
 
@@ -546,12 +588,27 @@ if st.button("🔍 Relevar Mercado"):
     sty = style_bold_min_prices(df_result, chain_cols=chain_cols)
     st.dataframe(sty, use_container_width=True)
 
-    # ✅ CSV (sin estilos)
+    # =========================
+    # ✅ NUEVA TABLA: % vs Carrefour
+    # =========================
+    st.markdown("### Diferencia % vs Carrefour")
+    df_pct = build_pct_vs_carrefour_table(df_result, chain_cols=chain_cols)
+    st.dataframe(df_pct, use_container_width=True)
+
+    # ✅ CSV (sin estilos) - precios
     fecha = datetime.now().strftime("%Y-%m-%d_%H%M")
     st.download_button(
-        label="⬇ Descargar CSV (Mercado)",
+        label="⬇ Descargar CSV (Mercado - Precios)",
         data=df_result.to_csv(index=False).encode("utf-8"),
-        file_name=f"relevar_mercado_{fecha}.csv",
+        file_name=f"relevar_mercado_precios_{fecha}.csv",
+        mime="text/csv",
+    )
+
+    # ✅ CSV - % vs Carrefour
+    st.download_button(
+        label="⬇ Descargar CSV (Mercado - % vs Carrefour)",
+        data=df_pct.to_csv(index=False).encode("utf-8"),
+        file_name=f"relevar_mercado_pct_vs_carrefour_{fecha}.csv",
         mime="text/csv",
     )
 else:
