@@ -1,5 +1,4 @@
 productos = {
-  productos = {
   "MONDELEZ OREO D.R. 118GR 3U 354G PQ AGR": {"empresa": "MONDELEZ", "categoría": "Biscuits", "subcategoría": "DULCES", "marca": "OREO", "ean": "7622201735258",},
   "BAGLEY SONRISAS FRAM DL RELLE 108GR PACK X3 U 324 G": {"empresa": "ARCOR", "categoría": "Biscuits", "subcategoría": "DULCES", "marca": "SONRISAS", "ean": "7790040133471",},
   "MONDELEZ OREO D.R. 118GR PAQ 1U": {"empresa": "MONDELEZ", "categoría": "Biscuits", "subcategoría": "DULCES", "marca": "OREO", "ean": "7622201735296",},
@@ -28,5 +27,4 @@ productos = {
   "BC LA CAMPAGNOLA SIN AZU NARANJA SOB. 7G P/1L": {"empresa": "ARCOR", "categoría": "Beverages", "subcategoría": "Pbs", "marca": "BC", "ean": "7790580132774",},
   "BELDENT MENTA S/AZ. 6 TABL. PQ. 10GR": {"empresa": "MONDELEZ", "categoría": "Gums", "subcategoría": "ADULTOS", "marca": "BELDENT", "ean": "77969071",},
   "TOP LINE S/AZUCAR SEVEN 14 GR XPLO.MINT 7 TABL.PAQ": {"empresa": "ARCOR", "categoría": "Gums", "subcategoría": "ADULTOS", "marca": "TOPLINE", "ean": "77931764",},
-}
 }
