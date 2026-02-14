@@ -1,5 +1,9 @@
 # app_relevar_mercado.py
 # Streamlit — Sección “Relevar Mercado” (ListPrice por cadena)
+# Mejora:
+# 1) Columnas de cadenas: "Carrefour | ... | Hiperlibertad" (sin "ListPrice ")
+# 2) Orden columnas: Empresa | Categoría | Marca | EAN | Nombre | Carrefour | ... | Hiperlibertad
+#
 # Requisitos: pip install streamlit requests pandas
 # Ejecutar:   streamlit run app_relevar_mercado.py
 
@@ -314,7 +318,6 @@ def fetch_jumbo_listprice(session: requests.Session, ean: str) -> str:
     }
     url = f"{BASE}/api/catalog_system/pub/products/search"
 
-    # Jumbo suele aceptar fallback ean, pero lo dejamos por compatibilidad.
     for fq in (f"alternateIds_Ean:{ean}", f"ean:{ean}"):
         r = session.get(url, headers=headers, params={"fq": fq, "sc": SC}, timeout=TIMEOUT)
         r.raise_for_status()
@@ -426,11 +429,10 @@ def fetch_libertad_listprice(session: requests.Session, ean: str) -> str:
 def compute_dispersion_row(row: dict):
     vals = []
     for k, v in row.items():
-        if not k.startswith("ListPrice "):
-            continue
-        n = parse_ar_price(v)
-        if n is not None and n > 0:
-            vals.append(n)
+        if k in ("Carrefour", "Día", "ChangoMas", "Coto", "Jumbo", "Vea", "Cooperativa", "Hiperlibertad"):
+            n = parse_ar_price(v)
+            if n is not None and n > 0:
+                vals.append(n)
     if len(vals) < 2:
         return {"min": None, "max": None, "delta": None}
     mn, mx = min(vals), max(vals)
@@ -440,9 +442,10 @@ def compute_dispersion_row(row: dict):
 def run_market_scan():
     s = requests.Session()
 
-    # Orden de columnas solicitado (sin Subcategoría)
-    base_cols = ["Empresa", "Categoría", "Marca", "Nombre"]
+    # Orden solicitado (agrega EAN)
+    base_cols = ["Empresa", "Categoría", "Marca", "EAN", "Nombre"]
 
+    # Columnas de cadenas SIN "ListPrice "
     chain_funcs = [
         ("Carrefour", lambda meta: fetch_carrefour_listprice(s, meta["ean"])),
         ("Día", lambda meta: fetch_dia_listprice(s, meta["cod_dia"])),
@@ -454,7 +457,7 @@ def run_market_scan():
         ("Hiperlibertad", lambda meta: fetch_libertad_listprice(s, meta["ean"])),
     ]
 
-    chain_cols = [f"ListPrice {name}" for name, _ in chain_funcs]
+    chain_cols = [name for name, _ in chain_funcs]
 
     total_steps = len(productos) * len(chain_funcs)
     prog = st.progress(0, text="Iniciando relevamiento…")
@@ -473,24 +476,25 @@ def run_market_scan():
             "Empresa": str(meta.get("empresa") or "").strip(),
             "Categoría": str(meta.get("categoría") or "").strip(),
             "Marca": str(meta.get("marca") or "").strip(),
+            "EAN": ean,
             "Nombre": str(nombre or "").strip(),
-            "ean": ean,
-            "cod_dia": cod_dia,
-            "cod_coope": cod_coope,
+            "ean": ean,                # internos para fetchers
+            "cod_dia": cod_dia,        # internos para fetchers
+            "cod_coope": cod_coope,    # internos para fetchers
         }
 
-        # precios por cadena (ListPrice)
+        # precios por cadena
         for chain_name, fn in chain_funcs:
-            lp = ""
+            val = ""
             try:
-                lp = fn({"ean": ean, "cod_dia": cod_dia, "cod_coope": cod_coope})
+                val = fn({"ean": ean, "cod_dia": cod_dia, "cod_coope": cod_coope})
                 # Regla UI: NO_ENCONTRADO se ve vacío
-                if lp == "NO_ENCONTRADO":
-                    lp = ""
+                if val == "NO_ENCONTRADO":
+                    val = ""
             except Exception:
-                lp = ""
+                val = ""
 
-            row[f"ListPrice {chain_name}"] = lp
+            row[chain_name] = val
 
             done += 1
             prog.progress(min(done / max(1, total_steps), 1.0), text=f"Relevando… {done}/{total_steps}")
@@ -505,7 +509,7 @@ def run_market_scan():
     # Tabla final (solo columnas solicitadas)
     df_out = df[base_cols + chain_cols].copy()
 
-    # Alerta de dispersión (opcional, no cambia columnas)
+    # Alerta de dispersión (opcional)
     disp = []
     for _, r in df_out.iterrows():
         d = compute_dispersion_row(r.to_dict())
