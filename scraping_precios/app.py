@@ -26,8 +26,8 @@ TIMEOUT = (4, 18)
 DISPERSION_THRESHOLD_ARS = 500
 
 # Colores suaves para bandas de 2 filas
-ROW_COLOR_A = "#F7FAFF"  # azul muy suave
-ROW_COLOR_B = "#F7FFF9"  # verde muy suave
+ROW_COLOR_A = "##d0d4db"  # azul
+ROW_COLOR_B = "##f7f8fa"  # blanco
 
 
 # =========================
@@ -668,3 +668,4 @@ if st.button("🔍 Relevar Mercado"):
     )
 else:
     st.info("Presioná **Relevar Mercado** para consultar el ListPrice en todas las cadenas.")
+
