@@ -1,11 +1,6 @@
 # app_relevar_mercado.py
 # Streamlit — Sección “Relevar Mercado” (ListPrice por cadena)
-# Mejora:
-# 1) Columnas de cadenas: "Carrefour | ... | Hiperlibertad" (sin "ListPrice ")
-# 2) Orden columnas: Empresa | Categoría | Marca | EAN | Nombre | Carrefour | ... | Hiperlibertad
-#
-# Requisitos: pip install streamlit requests pandas
-# Ejecutar:   streamlit run app_relevar_mercado.py
+# Mejora: precios sin decimales (3899,00 -> 3899)
 
 import time
 import re
@@ -37,12 +32,15 @@ st.markdown(f"**Productos cargados:** {len(productos)}")
 # =========================
 # Utils comunes
 # =========================
-def format_ar_price_no_thousands(value):
-    """1795.0 -> '1795,00' (sin separador de miles)."""
+def format_ar_price_no_decimals(value):
+    """1795.0 -> '1795' (sin miles, sin decimales)."""
     if value is None:
         return ""
     try:
-        return f"{float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", "")
+        v = float(value)
+        if v <= 0:
+            return ""
+        return str(int(round(v)))
     except Exception:
         return ""
 
@@ -56,15 +54,15 @@ def safe_float(x):
         return None
 
 
-def parse_ar_price(s: str):
-    """'2069,00' -> 2069.0"""
+def parse_price_int(s: str):
+    """'3899' -> 3899 (int)"""
     if s is None:
         return None
     s = str(s).strip()
     if not s:
         return None
     try:
-        return float(s.replace(".", "").replace(",", "."))
+        return int(float(s))
     except Exception:
         return None
 
@@ -109,7 +107,7 @@ def fetch_carrefour_listprice(session: requests.Session, ean: str) -> str:
         return ""
     co = sellers[0].get("commertialOffer") or {}
     lp = safe_float(co.get("ListPrice"))
-    return format_ar_price_no_thousands(lp) if lp and lp > 0 else ""
+    return format_ar_price_no_decimals(lp)
 
 
 def fetch_dia_listprice(session: requests.Session, cod_dia: str) -> str:
@@ -136,16 +134,10 @@ def fetch_dia_listprice(session: requests.Session, cod_dia: str) -> str:
         return ""
     co = sellers[0].get("commertialOffer") or {}
     lp = safe_float(co.get("ListPrice"))
-    return format_ar_price_no_thousands(lp) if lp and lp > 0 else ""
+    return format_ar_price_no_decimals(lp)
 
 
 def fetch_chango_listprice(session: requests.Session, ean: str) -> str:
-    """
-    FIX definitivo:
-    - Masonline/ChangoMás NO soporta fq=ean (400 Invalid Parameter, ean.)
-    - Intentamos: alternateIds_Ean -> alternateIds_RefId -> ft
-    - Si no encuentra: devuelve "" (NO_ENCONTRADO se ve vacío)
-    """
     BASE_CM = "https://www.masonline.com.ar"
     DEFAULT_SEGMENT = (
         "eyJjYW1wYWlnbnMiOm51bGwsImNoYW5uZWwiOiIxIiwicHJpY2VUYWJsZXMiOm51bGwsInJlZ2lvbklkIjoidjIuNDdERkY5REI3QkE5NEEyMEI1ODRGRjYzQTA3RUIxQ0EiLCJ1dG1fY2FtcGFpZ24iOm51bGwsInV0bV9zb3VyY2UiOm51bGwsInV0bWlfY2FtcGFpZ24iOm51bGwsImN1cnJlbmN5Q29kZSI6IkFSUyIsImN1cnJlbmN5U3ltYm9sIjoiJCIsImNvdW50cnlDb2RlIjoiQVJHIiwiY3VsdHVyZUluZm8iOiJlcy1BUiIsImNoYW5uZWxQcml2YWN5IjoicHVibGljIn0"
@@ -189,7 +181,7 @@ def fetch_chango_listprice(session: requests.Session, ean: str) -> str:
 
         co = sellers[0].get("commertialOffer") or {}
         lp = safe_float(co.get("ListPrice"))
-        return format_ar_price_no_thousands(lp) if lp and lp > 0 else ""
+        return format_ar_price_no_decimals(lp)
 
     return ""
 
@@ -302,7 +294,7 @@ def fetch_coto_listprice(session: requests.Session, ean: str, sucursal: str = "2
     det = r2.json()
     raw_list = coerce_first(find_key_recursive(det, "sku.activePrice"))
     lp = cast_price(raw_list)
-    return format_ar_price_no_thousands(lp) if lp and lp > 0 else ""
+    return format_ar_price_no_decimals(lp)
 
 
 def fetch_jumbo_listprice(session: requests.Session, ean: str) -> str:
@@ -334,7 +326,7 @@ def fetch_jumbo_listprice(session: requests.Session, ean: str) -> str:
             pwd = safe_float(co.get("PriceWithoutDiscount"))
             price = safe_float(co.get("Price"))
             lp = pwd if (pwd and pwd > 0) else price
-            return format_ar_price_no_thousands(lp) if lp and lp > 0 else ""
+            return format_ar_price_no_decimals(lp)
     return ""
 
 
@@ -367,7 +359,7 @@ def fetch_vea_listprice(session: requests.Session, ean: str) -> str:
     pwd = safe_float(co.get("PriceWithoutDiscount"))
     price = safe_float(co.get("Price"))
     lp = pwd if (pwd and pwd > 0) else price
-    return format_ar_price_no_thousands(lp) if lp and lp > 0 else ""
+    return format_ar_price_no_decimals(lp)
 
 
 def fetch_coope_listprice(session: requests.Session, cod_coope: str) -> str:
@@ -380,7 +372,7 @@ def fetch_coope_listprice(session: requests.Session, cod_coope: str) -> str:
     j = r.json() if "application/json" in (r.headers.get("content-type") or "").lower() else {}
     datos = (j or {}).get("datos") or {}
     lp = safe_float(datos.get("precio_anterior"))
-    return format_ar_price_no_thousands(lp) if lp and lp > 0 else ""
+    return format_ar_price_no_decimals(lp)
 
 
 def fetch_libertad_listprice(session: requests.Session, ean: str) -> str:
@@ -420,19 +412,19 @@ def fetch_libertad_listprice(session: requests.Session, ean: str) -> str:
         lp = float(lp_cents) / 100.0 if lp_cents else None
     except Exception:
         lp = None
-    return format_ar_price_no_thousands(lp) if lp and lp > 0 else ""
+    return format_ar_price_no_decimals(lp)
 
 
 # =========================
 # Runner (1 botón + barra progreso + tabla final)
 # =========================
 def compute_dispersion_row(row: dict):
+    cols = ("Carrefour", "Día", "ChangoMas", "Coto", "Jumbo", "Vea", "Cooperativa", "Hiperlibertad")
     vals = []
-    for k, v in row.items():
-        if k in ("Carrefour", "Día", "ChangoMas", "Coto", "Jumbo", "Vea", "Cooperativa", "Hiperlibertad"):
-            n = parse_ar_price(v)
-            if n is not None and n > 0:
-                vals.append(n)
+    for k in cols:
+        n = parse_price_int(row.get(k))
+        if n is not None and n > 0:
+            vals.append(n)
     if len(vals) < 2:
         return {"min": None, "max": None, "delta": None}
     mn, mx = min(vals), max(vals)
@@ -442,10 +434,8 @@ def compute_dispersion_row(row: dict):
 def run_market_scan():
     s = requests.Session()
 
-    # Orden solicitado (agrega EAN)
     base_cols = ["Empresa", "Categoría", "Marca", "EAN", "Nombre"]
 
-    # Columnas de cadenas SIN "ListPrice "
     chain_funcs = [
         ("Carrefour", lambda meta: fetch_carrefour_listprice(s, meta["ean"])),
         ("Día", lambda meta: fetch_dia_listprice(s, meta["cod_dia"])),
@@ -456,7 +446,6 @@ def run_market_scan():
         ("Cooperativa", lambda meta: fetch_coope_listprice(s, meta["cod_coope"])),
         ("Hiperlibertad", lambda meta: fetch_libertad_listprice(s, meta["ean"])),
     ]
-
     chain_cols = [name for name, _ in chain_funcs]
 
     total_steps = len(productos) * len(chain_funcs)
@@ -478,17 +467,15 @@ def run_market_scan():
             "Marca": str(meta.get("marca") or "").strip(),
             "EAN": ean,
             "Nombre": str(nombre or "").strip(),
-            "ean": ean,                # internos para fetchers
-            "cod_dia": cod_dia,        # internos para fetchers
-            "cod_coope": cod_coope,    # internos para fetchers
+            "ean": ean,
+            "cod_dia": cod_dia,
+            "cod_coope": cod_coope,
         }
 
-        # precios por cadena
         for chain_name, fn in chain_funcs:
             val = ""
             try:
                 val = fn({"ean": ean, "cod_dia": cod_dia, "cod_coope": cod_coope})
-                # Regla UI: NO_ENCONTRADO se ve vacío
                 if val == "NO_ENCONTRADO":
                     val = ""
             except Exception:
@@ -505,24 +492,22 @@ def run_market_scan():
     prog.progress(1.0, text=f"Relevamiento completado en {elapsed:.1f}s")
 
     df = pd.DataFrame(rows)
-
-    # Tabla final (solo columnas solicitadas)
     df_out = df[base_cols + chain_cols].copy()
 
-    # Alerta de dispersión (opcional)
-    disp = []
+    # alerta de dispersión
+    deltas = []
     for _, r in df_out.iterrows():
         d = compute_dispersion_row(r.to_dict())
-        disp.append(d["delta"] if d["delta"] is not None else 0.0)
-    max_delta = max(disp) if disp else 0.0
+        deltas.append(d["delta"] if d["delta"] is not None else 0)
+    max_delta = max(deltas) if deltas else 0
     if max_delta and max_delta > DISPERSION_THRESHOLD_ARS:
-        st.warning(f"⚠️ Dispersión alta detectada en al menos 1 ítem: Δ máx = {max_delta:.0f} ARS (umbral {DISPERSION_THRESHOLD_ARS})")
+        st.warning(f"⚠️ Dispersión alta detectada en al menos 1 ítem: Δ máx = {max_delta} ARS (umbral {DISPERSION_THRESHOLD_ARS})")
 
     return df_out
 
 
 # =========================
-# UI (1 botón)
+# UI
 # =========================
 if st.button("🔍 Relevar Mercado"):
     with st.spinner("⏳ Ejecutando relevamiento…"):
