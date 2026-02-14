@@ -4,6 +4,7 @@
 # 1) Elimina columna "Empresa"
 # 2) En cada fila, la(s) cadena(s) con menor precio queda(n) en **negrita** (mínimo por fila, ignorando vacíos)
 # 3) NUEVA TABLA debajo: Diferencia % de cada cadena vs Carrefour: (PrecioCadena / PrecioCarrefour - 1)
+# 4) Estilo de filas por pares: SKUs 1-2 color A, 3-4 color B, 5-6 color A, ...
 
 import time
 import re
@@ -23,6 +24,10 @@ st.caption("Consulta el **ListPrice** del mismo listado de EANs en todas las cad
 
 TIMEOUT = (4, 18)
 DISPERSION_THRESHOLD_ARS = 500
+
+# Colores suaves para bandas de 2 filas
+ROW_COLOR_A = "#F7FAFF"  # azul muy suave
+ROW_COLOR_B = "#F7FFF9"  # verde muy suave
 
 
 # =========================
@@ -436,6 +441,18 @@ def compute_dispersion_row(row: dict):
     return {"min": mn, "max": mx, "delta": mx - mn}
 
 
+def row_band_style(df: pd.DataFrame, color_a: str = ROW_COLOR_A, color_b: str = ROW_COLOR_B):
+    """
+    Bandas por pares de filas:
+      filas 0-1 -> A, 2-3 -> B, 4-5 -> A, ...
+    """
+    def _apply(row: pd.Series):
+        grp = (int(row.name) // 2) % 2  # cada 2 filas alterna
+        bg = color_a if grp == 0 else color_b
+        return [f"background-color: {bg};"] * len(row)
+    return df.style.apply(_apply, axis=1)
+
+
 def style_bold_min_prices(df: pd.DataFrame, chain_cols: list[str]):
     """
     Devuelve un Styler que pone en negrita el/los mínimos por fila entre chain_cols (ignorando vacíos).
@@ -461,6 +478,45 @@ def style_bold_min_prices(df: pd.DataFrame, chain_cols: list[str]):
     return df.style.apply(_row_style, axis=1)
 
 
+def style_prices_table(df: pd.DataFrame, chain_cols: list[str]):
+    """
+    Combina:
+      - Bandas por pares de filas (A/B)
+      - Negrita en mínimos por fila (solo columnas de cadenas)
+    """
+    def _combined(row: pd.Series):
+        grp = (int(row.name) // 2) % 2
+        bg = ROW_COLOR_A if grp == 0 else ROW_COLOR_B
+
+        nums = []
+        for c in chain_cols:
+            n = parse_price_int(row.get(c))
+            if n is not None and n > 0:
+                nums.append(n)
+        mn = min(nums) if nums else None
+
+        styles = []
+        for col in row.index:
+            parts = [f"background-color: {bg};"]
+            if col in chain_cols and mn is not None:
+                n = parse_price_int(row.get(col))
+                if n is not None and n == mn:
+                    parts.append("font-weight: 700;")
+            styles.append(" ".join(parts))
+        return styles
+
+    return df.style.apply(_combined, axis=1)
+
+
+def style_band_only(df: pd.DataFrame):
+    """Bandas por pares de filas (A/B) para cualquier tabla."""
+    def _apply(row: pd.Series):
+        grp = (int(row.name) // 2) % 2
+        bg = ROW_COLOR_A if grp == 0 else ROW_COLOR_B
+        return [f"background-color: {bg};"] * len(row)
+    return df.style.apply(_apply, axis=1)
+
+
 def build_pct_vs_carrefour_table(df_prices: pd.DataFrame, chain_cols: list[str]) -> pd.DataFrame:
     """
     Construye tabla con diferencia % vs Carrefour:
@@ -469,7 +525,7 @@ def build_pct_vs_carrefour_table(df_prices: pd.DataFrame, chain_cols: list[str])
       - Si Carrefour vacío/0 -> deja vacíos
       - Si Cadena vacío -> vacío
       - Carrefour: vacío (o podrías poner 0%)
-    Devuelve valores como string tipo '+3.2%' (ya formateados).
+    Devuelve strings tipo '+3.2%'.
     """
     base_cols = ["Categoría", "Marca", "EAN", "Nombre"]
     out_rows = []
@@ -488,7 +544,7 @@ def build_pct_vs_carrefour_table(df_prices: pd.DataFrame, chain_cols: list[str])
 
         for c in chain_cols:
             if c == "Carrefour":
-                out[c] = ""  # o "0.0%" si querés
+                out[c] = ""
                 continue
 
             p = parse_price_int(r.get(c))
@@ -584,16 +640,15 @@ if st.button("🔍 Relevar Mercado"):
 
     st.success("✅ Relevamiento finalizado")
 
-    # ✅ Display con mínimos en negrita
-    sty = style_bold_min_prices(df_result, chain_cols=chain_cols)
-    st.dataframe(sty, use_container_width=True)
+    # ✅ Tabla precios: bandas por pares + mínimos en negrita
+    sty_prices = style_prices_table(df_result, chain_cols=chain_cols)
+    st.dataframe(sty_prices, use_container_width=True)
 
-    # =========================
-    # ✅ NUEVA TABLA: % vs Carrefour
-    # =========================
+    # ✅ NUEVA TABLA: % vs Carrefour (mismas bandas por pares)
     st.markdown("### Diferencia % vs Carrefour")
     df_pct = build_pct_vs_carrefour_table(df_result, chain_cols=chain_cols)
-    st.dataframe(df_pct, use_container_width=True)
+    sty_pct = style_band_only(df_pct)
+    st.dataframe(sty_pct, use_container_width=True)
 
     # ✅ CSV (sin estilos) - precios
     fecha = datetime.now().strftime("%Y-%m-%d_%H%M")
