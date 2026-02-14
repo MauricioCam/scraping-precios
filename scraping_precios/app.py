@@ -1,6 +1,8 @@
 # app_relevar_mercado.py
-# Streamlit — Sección “Relevar Mercado” (ListPrice por cadena)
-# Mejora: precios sin decimales (3899,00 -> 3899)
+# Streamlit — “Relevar Mercado” (ListPrice por cadena)
+# Cambios:
+# 1) Elimina columna "Empresa"
+# 2) En cada fila, la(s) cadena(s) con menor precio queda(n) en **negrita** (mínimo por fila, ignorando vacíos)
 
 import time
 import re
@@ -418,10 +420,12 @@ def fetch_libertad_listprice(session: requests.Session, ean: str) -> str:
 # =========================
 # Runner (1 botón + barra progreso + tabla final)
 # =========================
+CHAIN_ORDER = ("Carrefour", "Día", "ChangoMas", "Coto", "Jumbo", "Vea", "Cooperativa", "Hiperlibertad")
+
+
 def compute_dispersion_row(row: dict):
-    cols = ("Carrefour", "Día", "ChangoMas", "Coto", "Jumbo", "Vea", "Cooperativa", "Hiperlibertad")
     vals = []
-    for k in cols:
+    for k in CHAIN_ORDER:
         n = parse_price_int(row.get(k))
         if n is not None and n > 0:
             vals.append(n)
@@ -431,10 +435,35 @@ def compute_dispersion_row(row: dict):
     return {"min": mn, "max": mx, "delta": mx - mn}
 
 
+def style_bold_min_prices(df: pd.DataFrame, chain_cols: list[str]):
+    """
+    Devuelve un Styler que pone en negrita el/los mínimos por fila entre chain_cols (ignorando vacíos).
+    """
+    def _row_style(row: pd.Series):
+        nums = []
+        for c in chain_cols:
+            n = parse_price_int(row.get(c))
+            if n is not None and n > 0:
+                nums.append(n)
+        if not nums:
+            return [""] * len(row)
+
+        mn = min(nums)
+        styles = [""] * len(row)
+        for i, col in enumerate(row.index):
+            if col in chain_cols:
+                n = parse_price_int(row.get(col))
+                if n is not None and n == mn:
+                    styles[i] = "font-weight: 700;"
+        return styles
+
+    return df.style.apply(_row_style, axis=1)
+
+
 def run_market_scan():
     s = requests.Session()
 
-    base_cols = ["Empresa", "Categoría", "Marca", "EAN", "Nombre"]
+    base_cols = ["Categoría", "Marca", "EAN", "Nombre"]  # ✅ sin Empresa
 
     chain_funcs = [
         ("Carrefour", lambda meta: fetch_carrefour_listprice(s, meta["ean"])),
@@ -462,7 +491,6 @@ def run_market_scan():
         cod_coope = str(meta.get("cod_coope") or meta.get("cod_coop") or "").strip()
 
         row = {
-            "Empresa": str(meta.get("empresa") or "").strip(),
             "Categoría": str(meta.get("categoría") or "").strip(),
             "Marca": str(meta.get("marca") or "").strip(),
             "EAN": ean,
@@ -480,7 +508,6 @@ def run_market_scan():
                     val = ""
             except Exception:
                 val = ""
-
             row[chain_name] = val
 
             done += 1
@@ -503,7 +530,7 @@ def run_market_scan():
     if max_delta and max_delta > DISPERSION_THRESHOLD_ARS:
         st.warning(f"⚠️ Dispersión alta detectada en al menos 1 ítem: Δ máx = {max_delta} ARS (umbral {DISPERSION_THRESHOLD_ARS})")
 
-    return df_out
+    return df_out, chain_cols
 
 
 # =========================
@@ -511,11 +538,15 @@ def run_market_scan():
 # =========================
 if st.button("🔍 Relevar Mercado"):
     with st.spinner("⏳ Ejecutando relevamiento…"):
-        df_result = run_market_scan()
+        df_result, chain_cols = run_market_scan()
 
     st.success("✅ Relevamiento finalizado")
-    st.dataframe(df_result, use_container_width=True)
 
+    # ✅ Display con mínimos en negrita
+    sty = style_bold_min_prices(df_result, chain_cols=chain_cols)
+    st.dataframe(sty, use_container_width=True)
+
+    # ✅ CSV (sin estilos)
     fecha = datetime.now().strftime("%Y-%m-%d_%H%M")
     st.download_button(
         label="⬇ Descargar CSV (Mercado)",
